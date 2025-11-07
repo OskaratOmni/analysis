@@ -1,0 +1,1148 @@
+---
+title: "GPRA outcomes analysis - treatment team"
+author: "Hannah Lunkenheimer"
+date: "`r format(Sys.Date(), '%m-%d-%Y')`"
+output: 
+  html_document:
+    toc: TRUE
+    self_contained: TRUE
+    number_sections: FALSE
+    fig_caption: TRUE
+    css: ["css/omni-style.css", "css/omni-page.css", "css/omni-default.css"]
+
+---
+
+## File description
+
+
+Input: 
+Cleaned intake file containing intakes and their matched latest assessments, also cleaned, AND all relevant 'other' variables cleaned/recoded as appropriate.
+
+
+Final output:
+Knitted file containing all treatment outcomes analyses for the SOR 3 Year 6 annual report.  
+ 
+Note: All questions are analyzed with the new GPRA tool only. 
+
+We report **p-values** for all of our statistical tests related to changes over time in family outcomes. A p-value tells us how likely it is that we could observe these results if there were actually no real difference present. Keeping with convention, p-values less than 0.05 are labeled "statistically significant." However, "significant" doesn't mean that the result is important, just that the observed difference would be unlikely if there were no real effect. Even with a statistically significant result, it is possible that no real relationship exists. We also report **effect sizes** for more practical interpretation of the relationship between variables. 
+
+ 
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE)
+
+# load packages
+
+library(tidyverse)
+library(tidyselect)
+library(scales)
+library(janitor)
+library(knitr)
+library(psych) # for chronbach's alpha test 
+library(omni)
+library(openxlsx)
+
+set_omni_defaults()
+
+my_wilcox_test <- function(df, var1, var2) {
+  
+  temp_df <- df %>%
+    select(client_id, !!sym(var2), !!sym(var1)) %>%
+    na.omit() %>%
+    group_by(client_id) %>%
+    filter(n() == 2) %>%
+    ungroup()
+
+  if (nrow(temp_df) < 2) {
+    return(data.frame(
+      measure = var1,
+      count = nrow(temp_df) / 2,
+      wilcox_p_val = NA,
+      pre_mean = NA,
+      post_mean = NA,
+      pct_change = NA,
+      effect_size_r = NA
+    ))
+  }
+
+  pre_data <- temp_df %>% filter(!!sym(var2) == "intake") %>% pull(!!sym(var1))
+  post_data <- temp_df %>% filter(!!sym(var2) == "fu/dis") %>% pull(!!sym(var1))
+
+  if (!is.numeric(pre_data) || !is.numeric(post_data)) {
+    stop(paste("Non-numeric data in variable", var1))
+  }
+
+  # Wilcox test
+  wilcox_res <- wilcox.test(pre_data, post_data, paired = TRUE, exact = FALSE)
+  pval <- wilcox_res$p.value
+  
+  n <- length(pre_data)  
+  z_value <- qnorm(wilcox_res$statistic / (n * (n + 1) / 2)) 
+  effect_size_r <- z_value / sqrt(n) 
+
+  pre_mean <- mean(pre_data)
+  post_mean <- mean(post_data)
+
+  summary <- data.frame(
+    measure = var1,
+    count = n,
+    wilcox_p_val = pval,
+    pre_mean = pre_mean,
+    post_mean = post_mean,
+    pct_change = ((post_mean * n) - (pre_mean * n)) / (pre_mean * n),
+    effect_size_r = effect_size_r
+  )
+
+  return(summary)
+}
+
+# function for freq table of select all
+
+freqc <- function(df, var, respondent_n, table_title = NULL) {
+  
+  summarized_df <- df %>% 
+    count({{ var }}) %>%
+    mutate(pct = n / respondent_n) %>% # want denominator to be fixed as n of respondents
+#    mutate(pct = percent(pct, accuracy = 1)) %>%
+    arrange(-pct) %>% 
+    adorn_totals("row")
+    
+ 
+  kable(summarized_df, caption = table_title)
+  
+}
+
+freq_select_all <- function(df, list_of_vars, respondent_n, table_title = NULL) {
+  
+  temp <- df %>%  
+    select(all_of(list_of_vars)) %>% 
+    mutate(none_selected = if_else(!if_all(everything(), is.na), NA_character_, "none selected")) %>%
+    pivot_longer(cols = everything(), values_to = 'selection')  %>% 
+    filter(!is.na(selection))
+  
+  freqc(temp, selection, respondent_n = respondent_n, table_title = table_title)  
+
+}
+
+# function for mcnemar chi square on matched_new
+
+my_mcnemar <- function(df, var) {
+  
+  # Select clients with data at both intake and follow-up/discharge
+  temp <- df %>% 
+    select(client_id, tool, {{ var }}) %>% 
+    na.omit() %>% 
+    group_by(client_id) %>%
+    filter(n() > 1) %>%
+    ungroup() %>% 
+    pivot_wider(id_cols = client_id, names_from = tool, values_from = {{ var }}) %>% 
+    tabyl(intake, `fu/dis`) %>% 
+    column_to_rownames(var = 'intake') %>% 
+    as.matrix()
+
+  # McNemar test
+  temp_p <- mcnemar.test(temp)$p.value
+  
+  # Calculate effect size (Cohen's g)
+  b <- temp[1, 2]  # 'no' to 'yes'
+  c <- temp[2, 1]  # 'yes' to 'no'
+  n <- sum(temp)  # Total number of clients
+  cohens_g <- abs(b - c) / n  # Cohen's g
+
+  # Calculate sample size
+  temp2 <- df %>%
+    select(client_id, tool, {{ var }}) %>%
+    na.omit() %>%
+    group_by(client_id) %>%
+    filter(n() > 1) %>%
+    ungroup()
+  
+  temp_n <- nrow(temp2) / 2  # Number of paired observations
+
+  # Summary statistics (mean percentage and percentage change)
+  result <- temp2 %>%
+    group_by(tool) %>%
+    summarise(mean(as.numeric(as.character(!!sym(var))))) %>%
+    pivot_wider(names_from = 1, values_from = 2) %>%
+    as.data.frame() %>% 
+    rename(intake_mean = intake,
+           la_mean = `fu/dis`) %>% 
+    mutate(
+      pct_change = paste0(round(((la_mean - intake_mean) / intake_mean) * 100, 0), "%"),
+      intake_mean_prop = intake_mean,  # Keep as a numeric proportion
+      intake_mean = paste0(round(intake_mean_prop * 100, 0), "%"),  # Format for display
+      la_mean = paste0(round(la_mean * 100, 0), "%"),
+      mcnemar_p_val = temp_p,
+      cohen_g = round(cohens_g, 3),  # Add effect size (Cohen's g)
+      measure = var,
+      n = temp_n,
+      intake_n = round(temp_n * intake_mean_prop)  # Calculate intake_n using proportion
+    ) %>% 
+    select(measure, n, intake_n, intake_mean, la_mean, pct_change, mcnemar_p_val, cohen_g)
+
+  return(result)
+}
+
+
+```
+
+```{r load data, include=FALSE}
+
+matched_all <- readRDS("data/intakes_cleaned_thru_10.15_other_corrected.rds") %>% 
+  group_by(client_id) %>% 
+  filter(n() > 1) %>%
+  ungroup()
+
+matched_new <- matched_all %>% # create df with only new tool matches
+  # filter(tool != "intake old") %>%  # remove old intakes
+  # group_by(client_id) %>% 
+  # filter(n() > 1) %>% # keep only new tool intakes with new tool matched assessments associated with them
+  # ungroup() %>% 
+  mutate(tool = case_match(tool,
+                           "intake new" ~ "intake",
+                           "fu/dis new" ~ "fu/dis"
+                           ))
+
+# matched_all <- matched_all %>% # create df with only new tool matches
+#   mutate(tool_new = case_match(tool,
+#                            "intake new" ~ "intake",
+#                            "intake old" ~ "intake",
+#                            "fu/dis new" ~ "fu/dis"
+#                            )) %>% 
+#   rename(tool_original = tool,
+#          tool = tool_new)
+
+matched_new$tool <- factor(matched_new$tool, levels = c("intake", "fu/dis"))
+# matched_all$tool <- factor(matched_all$tool, levels = c("intake", "fu/dis"))
+  
+```
+
+## Overall N's 
+
+### Number of individuals with both intake and latest assessment
+
+```{r n, include=TRUE}
+
+# cat(paste0("N matched ALL: ", length(unique(matched_all$client_id))))
+
+cat(paste0("N matched: ", length(unique(matched_new$client_id))))
+
+```
+
+## Substance Use and Treatment
+
+### Substance use changes - dichotomous
+
+Individual substances
+
+```{r su all, warning = FALSE, include=TRUE}
+
+p30_vars_new <- matched_new %>% 
+  select(c(starts_with("p30_") & ends_with("_s3") & !contains("text") & !contains("days") & !contains("comb") & !contains("route"))) %>% 
+  colnames()
+
+matched_new <- matched_new %>% 
+  mutate(across(
+    .cols = all_of(p30_vars_new),
+    .fns = ~factor(., levels = c(0,1)),
+    .names = "{.col}"
+  ))
+
+datalist_p30_new = list()
+
+for (i in 1:length(p30_vars_new)) {
+
+  var_name <- p30_vars_new[i]
+  assign("temp", var_name, envir = .GlobalEnv)
+
+  result <- my_mcnemar(matched_new, get("temp", globalenv()))
+
+  datalist_p30_new[[i]] <- result
+
+}
+
+p30_su_new <- do.call(rbind, datalist_p30_new) %>% 
+  filter(!(intake_mean == "0%" & la_mean == "0%"))
+#my_mcnemar(matched_new, "p30_alcohol_other_s3")
+
+kable(p30_su_new %>% arrange(mcnemar_p_val), caption = "Change in SU")
+
+```
+
+Substances, combined into categories
+
+```{r su comb, include=TRUE}
+
+p30_vars_new_comb <- matched_new %>% 
+  select(c(starts_with("p30_") & ends_with("_s3") & !contains("text") & !contains("days") & contains("comb") & !contains("route"))) %>% 
+  colnames()
+
+matched_new <- matched_new %>% 
+  mutate(across(
+    .cols = all_of(p30_vars_new_comb),
+    .fns = ~factor(., levels = c(0,1)),
+    .names = "{.col}"
+  ))
+
+datalist_p30_new_comb = list()
+
+for (i in 1:length(p30_vars_new_comb)) {
+
+  var_name <- p30_vars_new_comb[i]
+  assign("temp", var_name, envir = .GlobalEnv)
+
+  result <- my_mcnemar(matched_new, get("temp", globalenv()))
+
+  datalist_p30_new_comb[[i]] <- result
+
+}
+
+p30_su_new_comb <- do.call(rbind, datalist_p30_new_comb) %>% 
+  filter(!(intake_mean == "0%" & la_mean == "0%"))
+
+kable(p30_su_new_comb %>% arrange(mcnemar_p_val), caption = "Change in SU (combined categories)")
+
+```
+
+### Substance use changes - Number of days
+```{r}
+
+p30_vars_days_new <- matched_new %>%
+  select(starts_with("p30_") & ends_with("_s3") & !contains("text") & contains("days") & !contains("comb") & !contains("route")) %>%
+  select_if(is.numeric) %>%
+  colnames()
+
+datalist_su_days_new <- list()
+
+for (i in 1:length(p30_vars_days_new)) {
+  var_name <- p30_vars_days_new[i]
+  var2_name <- "tool"
+  
+  result <- my_wilcox_test(matched_new, var_name, var2_name)
+  
+  datalist_su_days_new[[i]] <- result
+}
+
+final_results <- bind_rows(datalist_su_days_new) %>%
+  filter(pct_change != "NaN") %>%
+  arrange(wilcox_p_val)
+```
+
+```{r su days change new, warning = FALSE, include=TRUE}
+
+p30_vars_days_new <- matched_new %>% 
+  select(c(starts_with("p30_") & ends_with("_s3") & !contains("text") & contains("days") & !contains("comb") & !contains("route"))) %>% 
+  colnames()
+
+datalist_su_days_new = list()
+
+for (i in 1:length(p30_vars_days_new)) {
+
+  var_name <- p30_vars_days_new[i]
+  var2_name <- "tool"
+  assign("temp", var_name, envir = .GlobalEnv)
+  assign("temp2", var2_name, envir = .GlobalEnv)
+
+  result <- my_wilcox_test(matched_new, get("temp", globalenv()), get("temp2", globalenv()))
+
+  datalist_su_days_new[[i]] <- result
+
+}
+
+datalist_su_days_new <- do.call(rbind, datalist_su_days_new) %>% 
+  arrange(wilcox_p_val) %>% 
+  filter(!(pre_mean == 0 & post_mean ==0))
+
+kable(datalist_su_days_new, caption = "Change in SU n of days in p30")
+
+# intake = matched_new %>% filter(tool == "intake")
+# 
+# hist(intake$p30_opioids_fentanyl_days_s3)
+# hist(intake$p30_cocaine_days_s3)
+# hist(intake$p30_alcohol_days_s3)
+# hist(intake$p30_tobacco_days_s3)
+# hist(intake$p30_marijuana_days_s3)
+
+```
+
+### Injection drug use
+
+```{r inj drug, include=TRUE}
+
+kable(my_mcnemar(matched_new, "p30_any_iv_route_comb"), caption = "Change in injection drug use (IV or Non-IV)")
+
+cat("note: variable name misleading - this is any injection drug, IV or non-IV")
+
+```
+
+### Experienced stress, gave up activities, experienced emotional problems
+
+```{r o imp new, warning = FALSE, include=TRUE}
+
+o_impact_vars <- matched_new %>% 
+  select(c(o_impact_stress_n, o_impact_activity_n, o_impact_emotional_n)) %>% 
+  colnames()
+
+datalist_o_impact = list()
+
+for (i in 1:length(o_impact_vars)) {
+
+  var_name <- o_impact_vars[i]
+  var2_name <- "tool"
+  assign("temp", var_name, envir = .GlobalEnv)
+  assign("temp2", var2_name, envir = .GlobalEnv)
+
+  result <- my_wilcox_test(matched_new, get("temp", globalenv()), get("temp2", globalenv()))
+
+  datalist_o_impact[[i]] <- result
+
+}
+
+datalist_o_impact <- do.call(rbind, datalist_o_impact)
+
+kable(datalist_o_impact %>% arrange(wilcox_p_val), caption = "Life disruptions due to drug/alc use")
+
+cat("note: likert scale on these questions is 1-4: 1 = not at all; 2 = somewhat; 3 = considerably; 4 = extremely")
+
+```
+
+### Medical treatment 
+
+```{r med trt, include=TRUE}
+
+received_med_care_vars <- c("received_med_care_pcp_s3", "received_med_care_urgent_care_s3", "received_med_care_ed_s3", "received_med_care_specialist_s3", "received_med_care_other_s3","received_med_care_none_s3", "received_med_care_any_s3")
+
+
+matched_new <- matched_new %>% 
+  mutate(across(
+    .cols = all_of(received_med_care_vars),
+    .fns = ~factor(., levels = c(0,1)),
+    .names = "{.col}"
+  ))
+
+datalist_med_care = list()
+
+for (i in 1:length(received_med_care_vars)) {
+
+  var_name <- received_med_care_vars[i]
+  assign("temp", var_name, envir = .GlobalEnv)
+
+  result <- my_mcnemar(matched_new, get("temp", globalenv()))
+
+  datalist_med_care[[i]] <- result
+
+}
+
+datalist_med_care <- do.call(rbind, datalist_med_care) %>% arrange(mcnemar_p_val)
+
+kable(datalist_med_care, caption = "Percent seeking medical care types in p30")
+
+```
+
+```{r, echo=FALSE, include=TRUE}
+med_care_fig_prep = datalist_med_care %>%
+  filter(measure %in% c("received_med_care_any_s3", "received_med_care_ed_s3", "received_med_care_urgent_care_s3")) %>%
+  mutate(
+    measure = recode(
+      measure,
+      "received_med_care_any_s3" = "Any Medical Care",
+      "received_med_care_ed_s3" = "Emergency Department",
+      "received_med_care_urgent_care_s3" = "Urgent Care"
+    ),
+    measure = if_else(mcnemar_p_val <= 0.05, paste0(measure, "*"), measure)
+  ) %>%
+  select(measure, intake_mean, la_mean) %>%
+  pivot_longer(cols = -measure, names_to = "time", values_to = "pct_formatted") %>%
+  mutate(
+    pct = as.numeric(str_replace(pct_formatted, "%", "")) / 100
+  )
+
+med_care_fig <- med_care_fig_prep %>%
+  mutate(
+    measure = fct_reorder(measure, pct),  # Order bars by `pct`
+    time = factor(time, levels = c("la_mean", "intake_mean"))  # Specify the order of dodged bars
+  ) %>%
+  ggplot(aes(x = pct, y = measure, fill = time)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(
+    aes(group = time, label = str_wrap(pct_formatted, width = 20)),
+    position = position_dodge(width = 0.9),  
+    hjust = -0.5,  # Adjust as needed
+    color = "black"
+  ) +
+  labs(fill = "") +
+  scale_fill_manual(
+    values = c("la_mean" = "#48AEE1", "intake_mean" = "#074369"),
+    labels = c("intake_mean" = "Intake assessment", "la_mean" = "Latest assessment")
+  ) + 
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "right"
+  ) +
+  guides(
+    fill = guide_legend(reverse = TRUE)  
+  ) +
+  coord_cartesian(clip = "off")
+
+med_care_fig
+```
+
+
+## Social Environment
+
+
+### Housing and living conditions
+
+#### Stable housing
+
+```{r housing new, include=TRUE}
+
+# group into housing categories per confluence page 
+
+# create housing_comb = housed, unhoused, other, or NA. print out the break down of % housed, unhoused, other in pre and post, for individuals where there is a value at both pre and post; run chi squared test  (see 'Employment' chunk example below)
+
+# kable(tabyl(matched_all, living_housed, tool))
+# kable(tabyl(matched_all, housing_comb, tool))
+
+matched_new %>% 
+  select(client_id, tool, housing_comb) %>% 
+  na.omit() %>% # next four lines select only clients that have data at intake and fu/dis
+  group_by(client_id) %>%
+  filter(n() > 1) %>%
+  ungroup() %>% 
+  tabyl(tool, housing_comb) %>% # create crosstab and do some formatting
+  adorn_percentages() %>% 
+  as.data.frame() %>% 
+  kable(caption = "Change in stable housing status")
+
+matched_new <- matched_new %>% 
+  mutate(housed = case_when(
+    housing_comb == "Housed" ~ 1,
+    housing_comb == "Unhoused" ~ 0,
+    TRUE ~ NA_real_
+  ),
+  housed = factor(housed, levels = c(0,1)))
+
+kable(my_mcnemar(matched_new, "housed"), caption = "Change in percent housed, excluding 'others'")
+
+cat("Note: See table for how categories were created: https://omniinstitute.atlassian.net/wiki/spaces/VASTX/pages/558399529/Treatment+Annual+Report+Analysis+Plan")
+```
+
+
+```{r}
+
+housed_bar_prep <- matched_new %>% 
+  select(client_id, tool, housing_comb) %>% 
+  na.omit() %>% # next four lines select only clients that have data at intake and fu/dis
+  group_by(client_id) %>%
+  filter(n() > 1) %>%
+  ungroup() %>% 
+  tabyl(tool, housing_comb) %>% # create crosstab and do some formatting
+  adorn_percentages() %>% 
+  as.data.frame() %>%
+  pivot_longer(cols = -tool, names_to = "house", values_to = "pct") %>%
+  mutate(pct_formatted = percent(pct, accuracy = 1),
+         tool = recode(tool,
+                            "intake" = "Intake Assessment",
+                            "fu/dis" = "Latest Assessment"))
+
+housed_bar <- housed_bar_prep %>%
+  mutate(
+    tool = factor(tool, levels = c("Intake Assessment", "Latest Assessment")),
+    house = factor(house, levels = c("Other", "Unhoused", "Housed"))
+  ) %>%
+  ggplot(aes(x = pct, y = fct_rev(tool), fill = house)) +
+  geom_col(position = position_stack()) +
+  geom_text(
+    aes(group = house, label = pct_formatted),
+    position = position_stack(vjust = 0.5),  # Align text labels in the middle of the stacks
+    hjust = 0.5,  # Center text horizontally
+    color = "white"
+  ) +
+  labs(fill = "") +
+  scale_fill_manual(values = c("Housed" = "#074369", "Unhoused" = "#48AEE1", "Other" = "#97D162")) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "bottom"
+  ) +
+  guides(
+        fill = guide_legend(reverse = TRUE)  
+  )
+
+housed_bar
+```
+
+
+#### Living with someone who used alcohol/drugs
+
+"Do you currently live with any person who, over the past 30 days, has regularly used alcohol or other substances?"
+
+```{r living cond, include=TRUE}
+
+kable(my_mcnemar(matched_new, "living_alc_drug_use_s3"), caption = "Change in living with a person who used alcohol/drugs")
+
+```
+
+### Relationships
+
+#### Interactions with supportive family/friends
+
+"In the past 30 days, did you have interactions with family/friends that are supportive of recovery?" 
+
+```{r interact ff new, include=TRUE}
+
+kable(my_mcnemar(matched_new, "qol_interact_family_friend"), caption = "Change in P30 interaction with supportive family/friends") 
+
+```
+
+#### Changing connections
+
+"In the past 30 days did you realize that you need to change those social connections or places that negatively impact your recovery?"
+
+```{r connections, include=TRUE}
+
+social_connection_fig = my_mcnemar(matched_new, "change_connections_s3")
+
+social_connection_fig_prep = social_connection_fig %>%
+  mutate(
+    measure = if_else(mcnemar_p_val <= 0.05, paste0(measure, "*"), measure)
+  ) %>%
+  select(-n, -pct_change, -mcnemar_p_val, -cohen_g, -intake_n) %>% 
+  pivot_longer(cols = -measure, names_to = "time", values_to = "pct_formatted") %>%
+  mutate(
+    pct = as.numeric(str_replace(pct_formatted, "%", "")) / 100,
+    time = recode(time,
+                            "intake_mean" = "Intake Assessment",
+                            "la_mean" = "Latest Assessment"))
+
+social_connection_fig <- social_connection_fig_prep %>%
+  ggplot(aes(x = time, y = pct, fill = time)) +
+  geom_col() +
+  geom_text(
+    aes(group = measure, label = pct_formatted),
+    position = position_stack(vjust = .9),  
+    hjust = 0.5,  
+    color = "white"
+  ) +
+  labs(fill = "") +
+  scale_fill_manual(values = c("Intake Assessment" = "#074369", "Latest Assessment" = "#48AEE1")) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank()
+  ) 
+
+social_connection_fig
+```
+
+### Employment
+
+```{r employment new, include=TRUE}
+
+# matched_new %>% 
+#   select(client_id, tool, employ_status) %>% 
+#   na.omit() %>% # next four lines select only clients that have data at intake and fu/dis
+#   group_by(client_id) %>%
+#   filter(n() > 1) %>%
+#   ungroup() %>% 
+#   tabyl(employ_status, tool) %>% # create crosstab and do some formatting
+#   adorn_percentages() %>% 
+#   adorn_ns() %>% 
+#   as.data.frame() %>% 
+#   select("employ_status", "intake", "fu/dis") %>% 
+#   kable(caption = "Change in employment status - new tool only")
+
+kable(my_mcnemar(matched_new, "employed_yn"), caption = "Change in employment status YN")
+
+cat("note: employed = 1 is all people who are employed FT or PT, employed = 0 is all people who reported unemployment due to looking for work, a disability, not looking for work, retired, or volunteer work. all other cases were excluded from this analysis.")
+
+```
+
+## Mental health and QOL
+
+### Mental health issues
+
+"In the past 30 days, how many days have you:" 
+
+```{r mh new new, warning = FALSE, include=TRUE}
+
+mh_days_vars <- c("mh_days_serious_depression","mh_days_serious_anxiety","mh_days_hallucinations","mh_days_trouble_understanding","mh_days_t_violent_behavior","mh_days_attempted_suicide","mh_days_prescribed_meds_psych_emot")
+
+datalist_mh_days_new = list()
+
+for (i in 1:length(mh_days_vars)) {
+
+  var_name <- mh_days_vars[i]
+  var2_name <- "tool"
+  assign("temp", var_name, envir = .GlobalEnv)
+  assign("temp2", var2_name, envir = .GlobalEnv)
+
+  result <- my_wilcox_test(matched_new, get("temp", globalenv()), get("temp2", globalenv()))
+
+  datalist_mh_days_new[[i]] <- result
+
+}
+
+datalist_mh_days_new <- do.call(rbind, datalist_mh_days_new) %>% arrange(wilcox_p_val)
+
+kable(datalist_mh_days_new, caption = "Change in MH challenge n of days in p30")
+
+kable(my_mcnemar(matched_new, "mh_days_any"), caption = "Change any MH issues (any days >0 for any issues, dichotomous)")
+
+```
+
+```{r, echo=FALSE, include=TRUE}
+# mental health issues in last 30 days dumbbell
+
+p30_mh_dumbbell_prep <- datalist_mh_days_new %>%
+  filter(measure %in% c("mh_days_serious_anxiety", "mh_days_serious_depression", "mh_days_trouble_understanding")) %>%
+  mutate(
+    measure = recode(
+      measure,
+      "mh_days_serious_anxiety" = "Serious anxiety",
+      "mh_days_serious_depression" = "Serious depression",
+      "mh_days_trouble_understanding" = "Trouble understanding or concentrating"
+    ),
+    measure = if_else(wilcox_p_val <= 0.05, paste0(measure, "*"), measure)
+  ) %>%
+  select(measure, pre_mean, post_mean) %>%
+  pivot_longer(cols = -measure, names_to = "time", values_to = "days") %>%
+  mutate(days = round(days, 1))
+
+p30_mh_dumbbell <- p30_mh_dumbbell_prep %>%
+  ggplot(aes(
+    x = measure,
+    y = days,
+    color = time,
+    group = measure
+  )) +
+  geom_line(color = "grey") +
+  geom_point(size = 10)+
+  geom_text(
+    aes(label = days),
+    color = "white",
+    size = 3
+  ) +
+  scale_y_continuous(limits = c(0, 12)) +
+  scale_x_discrete(labels = label_wrap(20)) +  
+  scale_color_manual(
+    values = c("pre_mean" = "#074369", "post_mean" = "#48AEE1"), 
+    labels = c("pre_mean" = "Intake Assessment", "post_mean" = "Latest Assessment")
+  ) + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "top"
+  ) +
+  guides(color = guide_legend(reverse = TRUE))  
+
+p30_mh_dumbbell
+```
+
+
+### Bothered by psych and emotional problems
+
+```{r bothered psych emo new, include=TRUE}
+
+kable(my_wilcox_test(matched_new, "mh_psych_emot_impact_n", "tool"), caption = "Change in exent to which participants were bothered by psychological and emotional problems")
+
+cat("note: likert scale on this question is 1-5: 1 = not at all; 2 = slightly; 3 = moderately; 4 = considerably; 5 = extremely")
+
+```
+```{r}
+bothered_bar <- my_wilcox_test(matched_new, "mh_psych_emot_impact_n", "tool")
+
+bothered_bar_prep <- bothered_bar %>%
+  mutate(
+    measure = recode(
+      measure,
+      "mh_psych_emot_impact_n" = "Emotional impact"
+    ),
+    measure = if_else(wilcox_p_val <= 0.05, paste0(measure, "*"), measure)
+  ) %>%
+  select(measure, pre_mean, post_mean) %>%
+  pivot_longer(cols = -measure, names_to = "time", values_to = "likert") %>%
+  mutate(likert = round(likert, 1))
+
+bothered_bar <- bothered_bar_prep %>%
+  mutate(time = factor(time, levels = c("pre_mean", "post_mean"), 
+                       labels = c("Intake Assessment", "Latest Assessment"))) %>%
+  ggplot(aes(x = time, y = likert, fill = time)) +
+  geom_col() +
+  geom_text(
+    aes(label = likert),
+    vjust = -0.5
+  ) +
+  scale_fill_manual(
+    values = c("Intake Assessment" = "#074369", "Latest Assessment" = "#48AEE1")) + 
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.title = element_blank()
+  ) 
+
+bothered_bar
+```
+
+
+### QOL overall
+
+"How would you rate your quality of life over the past 30 days?" 
+
+```{r qol overall new, include=TRUE}
+
+# will need to convert likert scale in qol_life_quality_s3 to numeric 1-5 in matched_new, then run t-test
+
+matched_new %>%
+  select(client_id, tool, qol_life_quality_combined) %>%
+  na.omit() %>% # next four lines select only clients that have data at intake and fu/dis
+  group_by(client_id) %>%
+  filter(n() > 1) %>%
+  ungroup() %>%
+  tabyl(tool, qol_life_quality_combined) %>% # create crosstab and do some formatting
+  adorn_percentages() %>%
+  adorn_pct_formatting() %>% 
+  adorn_ns() %>% 
+  as.data.frame() %>%
+ # select("qol_life_quality_combined_n", "intake", "fu/dis") %>%
+  kable(caption = "Change in qol")
+
+cat("note: NA's removed, consider these as valid percents")
+
+```
+
+```{r qol overall new new, include=TRUE}
+
+# will need to convert likert scale in qol_life_quality_s3 to numeric 1-5 in matched_new, then run t-test
+
+kable(my_wilcox_test(matched_new, "qol_life_quality_combined_n", "tool"), caption = "Change in quality of life rating scale 1-5")
+
+```
+
+### QOL breakdowns
+
+```{r qol breakdown new, include=TRUE}
+
+# will need to convert likert scale in variables to numeric 1-5 in matched_all, then run t-test
+
+kable(my_wilcox_test(matched_new, "qol_health_satisfaction_n", "tool"), caption = "Change in health satisfaction")
+kable(my_wilcox_test(matched_new, "qol_perform_daily_act_satis_n", "tool"), caption = "Change in satisfaction with ability to perform daily activities")
+kable(my_wilcox_test(matched_new, "o_living_cond_sat_n", "tool"), caption = "Change in satisfaction with conditions of living place")
+kable(my_wilcox_test(matched_new, "qol_rel_satisfaction_n", "tool"), caption = "Change in satisfaction with personal relationships")
+
+```
+
+```{r, echo=FALSE, include=TRUE}
+qol1 <- my_wilcox_test(matched_new, "qol_health_satisfaction_n", "tool")
+qol2 <- my_wilcox_test(matched_new, "qol_perform_daily_act_satis_n", "tool")
+qol3 <- my_wilcox_test(matched_new, "o_living_cond_sat_n", "tool")
+qol4 <- my_wilcox_test(matched_new, "qol_rel_satisfaction_n", "tool")
+
+qol_bar <- rbind(qol1, qol2, qol3, qol4)
+
+qol_bar_prep <- qol_bar %>%
+  mutate(
+    measure = recode(
+      measure,
+      "qol_health_satisfaction_n" = "Health",
+      "qol_perform_daily_act_satis_n" = "Ability to perform daily activities",
+      "o_living_cond_sat_n" = "Conditions of living place",
+      "qol_rel_satisfaction_n" = "Personal relationships"
+    ),
+    measure = if_else(wilcox_p_val <= 0.05, paste0(measure, "*"), measure)
+  ) %>%
+  select(measure, pre_mean, post_mean) %>%
+  pivot_longer(cols = -measure, names_to = "time", values_to = "likert") %>%
+  mutate(likert = round(likert, 1))
+
+qol_bar_fig <- qol_bar_prep %>%
+  mutate(time = factor(time, levels = c("pre_mean", "post_mean")) ) %>%
+  ggplot(aes(x = measure, y = likert, fill = time)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(
+    aes(group = likert, label = likert),
+    position = position_dodge(width = 0.9),  
+    vjust = -0.5, 
+    color = "black"
+  ) +
+  labs(fill = "") +
+  scale_x_discrete(labels = label_wrap(20)) +  
+  scale_fill_manual(
+    values = c("post_mean" = "#48AEE1", "pre_mean" = "#074369"),
+    labels = c("pre_mean" = "Intake assessment", "post_mean" = "Latest assessment")
+  ) + 
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position = "top"
+  ) +
+  coord_cartesian(clip = "off")
+
+qol_bar_fig
+```
+
+
+```{r qol domain score new alpha, include=TRUE}
+
+# chronbach's alpha for life sat domain score
+
+cat("Note: Domain Score composite of health satisfaction, ability to perform daily activities, conditions of living place, and personal relationships. Average only taken for those who answered at least 3 out of these 4 items.")
+
+cat("Chronbach's alpha for at **intake** life sat domain score components")
+
+ca_life_sat_domain_intake <- matched_new %>% 
+  filter(tool == "intake") %>% 
+  select("qol_health_satisfaction_n", "qol_perform_daily_act_satis_n", "o_living_cond_sat_n", "qol_rel_satisfaction_n") %>% 
+  as.data.frame()
+
+psych::alpha(ca_life_sat_domain_intake)
+
+cat("Chronbach's alpha for at **latest assessment** life sat domain score components")
+
+ca_life_sat_domain_fu <- matched_new %>% 
+  filter(tool == "fu/dis") %>% 
+  select("qol_health_satisfaction_n", "qol_perform_daily_act_satis_n", "o_living_cond_sat_n", "qol_rel_satisfaction_n") %>% 
+  as.data.frame()
+
+psych::alpha(ca_life_sat_domain_fu)
+
+```
+
+```{r qol domain score new, include=TRUE}
+
+kable(my_wilcox_test(matched_new, "qol_life_sat_domain_score", "tool"), caption = "Change in Quality of Life Domain Score")
+
+```
+
+### Improved life satisfaction sub analyses
+
+```{r qol domain score analyses new, include=TRUE}
+
+# create variable improved_life_sat_domain_score = 1 if client increased qol_life_sat_domain_score between intake and latest assessment, 0 if qol_life_sat_domain_score stayed the same or decreased, NA if  qol_life_sat_domain_score was NA at one or more timepoints. 
+
+# run crosstab/chi square on employ_status, o_coach_spec_mentor, p30_any_sub_ex_tob_alc_mj_comb_s3
+
+qol_life_sat_domain_score_wide <-
+  matched_new %>% 
+  mutate(tool = case_when(tool == "fu/dis" ~ "fudis",
+                          tool == "intake" ~ "intake")) %>% 
+  select(client_id, qol_life_sat_domain_score, tool) %>% 
+  pivot_wider(id_cols = client_id, names_from = tool, values_from = c(qol_life_sat_domain_score)) %>%
+  mutate(improved_life_sat_domain_score = case_when(is.na(fudis) ~ NA,
+                                                    is.na(intake) ~ NA, 
+                                                    fudis > intake ~ "yes",
+                                                    fudis <= intake ~ "no"
+                                                    )) %>% 
+  select(client_id, improved_life_sat_domain_score)
+
+matched_qol_fudis <- matched_new %>% 
+  left_join(qol_life_sat_domain_score_wide, by = "client_id") %>% 
+  filter(tool == "fu/dis") %>% 
+  filter(!is.na(improved_life_sat_domain_score)) %>% 
+  select(client_id, employed_yn, o_coach_spec_mentor, p30_any_sub_ex_tob_alc_mj_comb_s3, improved_life_sat_domain_score)
+
+## improved domain score
+
+matched_qol_fudis %>% 
+  tabyl(improved_life_sat_domain_score) %>% 
+  kable(caption = "at fu/dis: improved_life_sat_domain_score - new")
+
+### employ_status
+matched_qol_fudis %>% 
+  filter(!is.na(employed_yn)) %>% 
+  tabyl(improved_life_sat_domain_score, employed_yn) %>% 
+  adorn_percentages() %>% 
+  adorn_ns() %>% 
+  adorn_title() %>% 
+  kable(caption = "at fu/dis: improved_life_sat_domain_score X employed_yn - new")
+
+chisq.test(matched_qol_fudis$employed_yn, matched_qol_fudis$improved_life_sat_domain_score)
+
+### o_coach_spec_mentor
+matched_qol_fudis %>% 
+  filter(!is.na(o_coach_spec_mentor)) %>% 
+  tabyl(improved_life_sat_domain_score, o_coach_spec_mentor) %>% 
+  adorn_percentages() %>% 
+  adorn_ns() %>% 
+  adorn_title() %>% 
+  kable(caption = "at fu/dis: improved_life_sat_domain_score X o_coach_spec_mentor - new")
+
+chisq.test(matched_qol_fudis$o_coach_spec_mentor, matched_qol_fudis$improved_life_sat_domain_score)
+
+### p30_any_sub_ex_tob_alc_mj_comb_s3
+matched_qol_fudis %>% 
+  filter(!is.na(p30_any_sub_ex_tob_alc_mj_comb_s3)) %>% 
+  tabyl(improved_life_sat_domain_score, p30_any_sub_ex_tob_alc_mj_comb_s3) %>% 
+  adorn_percentages() %>% 
+  adorn_ns() %>% 
+  adorn_title() %>% 
+  kable(caption = "at fu/dis: improved_life_sat_domain_score X p30_any_sub_ex_tob_alc_mj_comb_s3 - new")
+
+chisq.test(matched_qol_fudis$p30_any_sub_ex_tob_alc_mj_comb_s3, matched_qol_fudis$improved_life_sat_domain_score)
+
+```
+
+### Negative impacts of SU
+
+#### Substance use domain score
+
+```{r su domain score alpha, include=TRUE}
+
+# chronbach's alpha for life sat domain score
+
+cat("Note: Domain Score composite of o_impact_stress_n, o_impact_activity_n, and o_impact_emotional_n. Average only taken for those who answered at least 2 out of these 3 items.")
+
+cat("Chronbach's alpha at **intake** for SU domain score components")
+
+ca_su_domain_intake <- matched_new %>% 
+  filter(tool == "intake") %>% 
+  select("o_impact_stress_n", "o_impact_activity_n", "o_impact_emotional_n") %>% 
+  as.data.frame()
+
+psych::alpha(ca_su_domain_intake)
+
+cat("Chronbach's alpha at **latest assessment** for SU domain score components")
+
+ca_su_domain_fu <- matched_new %>% 
+  filter(tool == "fu/dis") %>% 
+  select("o_impact_stress_n", "o_impact_activity_n", "o_impact_emotional_n") %>% 
+  as.data.frame()
+
+psych::alpha(ca_su_domain_fu)
+
+```
+
+```{r su domain score new, include=TRUE}
+
+kable(my_wilcox_test(matched_new, "su_domain_score", "tool"), caption = "Change in Substance Use Domain Score")
+
+```
+
+#### Improved SU domain score sub analyses
+
+```{r su domain score analyses new, include=TRUE}
+
+su_domain_score_wide <-
+  matched_new %>% 
+  mutate(tool = case_when(tool == "fu/dis" ~ "fudis",
+                          tool == "intake" ~ "intake")) %>% 
+  select(client_id, su_domain_score, tool) %>% 
+  pivot_wider(id_cols = client_id, names_from = tool, values_from = c(su_domain_score)) %>%
+  mutate(improved_su_domain_score = case_when(is.na(fudis) ~ NA,
+                                                    is.na(intake) ~ NA, 
+                                                    fudis > intake ~ "yes",
+                                                    fudis <= intake ~ "no"
+                                                    )) %>% 
+  select(client_id, improved_su_domain_score)
+
+matched_su_fudis <- matched_new %>% 
+  left_join(su_domain_score_wide, by = "client_id") %>% 
+  filter(tool == "fu/dis") %>% 
+  filter(!is.na(improved_su_domain_score)) %>% 
+  select(client_id, employed_yn, o_coach_spec_mentor, p30_any_sub_ex_tob_alc_mj_comb_s3, improved_su_domain_score, o_available_transport)
+
+## improved domain score
+
+matched_su_fudis %>% 
+  tabyl(improved_su_domain_score) %>% 
+  kable(caption = "at fu/dis: improved_su_domain_score - new")
+
+
+### employ_status
+
+matched_su_fudis %>% 
+  filter(!is.na(employed_yn)) %>% 
+  tabyl(improved_su_domain_score, employed_yn) %>% 
+  adorn_percentages() %>% 
+  adorn_ns() %>% 
+  adorn_title() %>% 
+  kable(caption = "at fu/dis: improved_su_domain_score X employed_yn - new")
+
+chisq.test(matched_su_fudis$employed_yn, matched_su_fudis$improved_su_domain_score)
+
+### o_coach_spec_mentor
+matched_su_fudis %>% 
+  filter(!is.na(o_coach_spec_mentor)) %>% 
+  tabyl(improved_su_domain_score, o_coach_spec_mentor) %>% 
+  adorn_percentages() %>% 
+  adorn_ns() %>% 
+  adorn_title() %>% 
+  kable(caption = "at fu/dis: improved_su_domain_score X o_coach_spec_mentor - new")
+
+chisq.test(matched_su_fudis$o_coach_spec_mentor, matched_su_fudis$improved_su_domain_score)
+
+### p30_any_sub_ex_tob_alc_mj_comb_s3
+matched_su_fudis %>% 
+  filter(!is.na(p30_any_sub_ex_tob_alc_mj_comb_s3)) %>% 
+  tabyl(improved_su_domain_score, p30_any_sub_ex_tob_alc_mj_comb_s3) %>% 
+  adorn_percentages() %>% 
+  adorn_ns() %>% 
+  adorn_title() %>% 
+  kable(caption = "at fu/dis: improved_su_domain_score X p30_any_sub_ex_tob_alc_mj_comb_s3 - new")
+
+chisq.test(matched_su_fudis$p30_any_sub_ex_tob_alc_mj_comb_s3, matched_su_fudis$improved_su_domain_score)
+
+```
+
+```{r, echo = FALSE}
+# generating workbook for figs
+
+# specify file path where we want workbook saved
+figs_path <- "../../../General/SOR Reports/Year 6 Annual Report/Treatment Drafts/figs"
+
+workbook_filename <- file.path(figs_path, "gpra_outcomes_tx_figures_workbook.xlsx")
+
+dataframes <- list(`Medical care` = med_care_fig_prep,
+                   `Housed bar` = housed_bar_prep,
+                   `Social connection` = social_connection_fig_prep,
+                   `Past 30 mental health` = p30_mh_dumbbell_prep,
+                   `Bothered by emotions` = bothered_bar_prep,
+                   `Quality of life` = qol_bar_prep
+                   )
+
+figs <- list(`Medical care fig` = med_care_fig,
+             `Housed bar fig` = housed_bar,
+             `Social connection fig` = social_connection_fig,
+             `Past 30 mental health fig` = p30_mh_dumbbell,
+             `Bothered by emotions fig` = bothered_bar,
+             `Quality of life fig` = qol_bar_fig
+             )
+
+# Create a new workbook
+wb <- createWorkbook()
+
+# Loop through the dataframes and plots
+for (i in seq_along(dataframes)) {
+  df_name <- names(dataframes)[i]
+  df <- dataframes[[i]]
+  plot <- figs[[i]]
+  
+  # Add a new sheet for the dataframe and plot
+  addWorksheet(wb, df_name)
+  
+  # Write the dataframe to the sheet
+  writeData(wb, df_name, df, startCol = 1, startRow = 1)
+  
+  # Save the plot as an image
+  plot_filename <- file.path(figs_path, paste0(df_name, "_fig.png"))
+  ggsave(plot_filename, plot = plot, width = 6, height = 4)
+  
+  # Insert the plot image into the sheet
+  insertImage(wb, sheet = df_name, file = plot_filename, startCol = 8, startRow = 1, width = 6, height = 4)
+  
+  # Clean up the image file
+  #file.remove(plot_filename)
+}
+
+# Save the workbook
+saveWorkbook(wb, workbook_filename, overwrite = TRUE)
+```

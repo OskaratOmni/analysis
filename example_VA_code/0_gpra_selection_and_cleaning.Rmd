@@ -1,0 +1,2179 @@
+---
+title: "GPRA intake cleaning"
+author: "Hannah Lunkenheimer"
+date: "`r format(Sys.Date(), '%m-%d-%Y')`"
+output: 
+  html_document:
+    toc: TRUE
+    self_contained: TRUE
+    number_sections: FALSE
+    fig_caption: TRUE
+    css: ["css/omni-style.css", "css/omni-page.css", "css/omni-default.css"]
+
+---
+
+## File description
+
+This file is used to clean/prepare GPRA intake and latest assessment data for Year 6 annual report analysis (SOR III Year 2). The analysis period is 10/1/2023 - 9/30/2024 (SOR III Year 2). 
+
+This syntax cleans intake data from current tool and then appends them together for one long, complete file including all SOR 3 Year 1 and 2 intakes to be used for analysis. 
+
+Input: 
+1) tracking sheet data containing "good" gpras and their corresponding matched fu and discharge data
+2) raw qualtrics data from old tool intake and new tool intake, plus fu and dis survey
+3) intake_codebook mapping old tool intake to new tool intake variables
+4) codebook mapping fu/dis var names to intake var names
+
+Ouput:  
+Cleaned intake file containing intakes from old tool and new tool and their matched latest assessments, also cleaned. Note: file output does NOT yet have 'other' variables recoded. 
+
+Note: this Rmd should not be knit but rather "run all" 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      fig.topcaption = TRUE,
+                      fig.cap = TRUE,
+                      dpi = 150)  
+
+# load packages
+
+library(tidyverse)
+library(janitor)
+library(openxlsx)
+library(data.table)
+library(summarytools)
+library(qualtRics)
+library(lubridate)
+library(knitr)
+
+```
+
+Loading data
+
+```{r load data, include=FALSE}
+
+# load qualtrics credentials and reload R environment- uncomment if you haven't run this on your computer before
+# qualtrics_api_credentials(api_key = "EHfE9J9VEaCyeoGhfm6Npm3IkZ4iJmuVoAUl4h4b",
+#                           base_url = "iad1.qualtrics.com",
+#                           install = TRUE)
+
+# readRenviron("~/.Renviron")
+
+intakes_new_tool <- fetch_survey(surveyID = "SV_eqA70VKVnKkFp9I") 
+
+# intakes_old_tool <- fetch_survey(surveyID = "SV_6sUlRHwSxD8Ql26")
+
+fu_dis_new_tool <- fetch_survey(surveyID = "SV_9U2QT0oVKgQa4Ki")
+
+tsheet_data <- readRDS("data/Intake_FU_Dis_tsheet_10242024.rds") # this .rds is generated here "Treatment/Data & Analysis/GPRA SOR Tracking Sheets/Syntax/SORIII_WeeklyTrackingSheets_v4.R 
+
+intake_codebook <- read.xlsx("qualtrics_codebook/old_to_new_tool_label_map.xlsx")
+
+fu_dis_codebook <- read.xlsx("qualtrics_codebook/fu_dis_labels_mt.xlsx")
+
+```
+
+Export intake variable labels 
+
+```{r intake label export, include=FALSE}
+
+# run this chunk once to export var labels. don't need to run again. 
+
+# old_tool_labels <- dfSummary(intakes_old_tool) %>%
+#   select(-c(No, Graph, text.graph))
+# 
+# old_tool_labels$Variable <- strsplit(old_tool_labels$Variable, "\\\\")
+# old_tool_labels$Var <- sapply(old_tool_labels$Variable, `[`, 1)
+# old_tool_labels$Type <- sapply(old_tool_labels$Variable, `[`, 2)
+# 
+# old_tool_labels <- old_tool_labels %>%
+#   select(c(Var, Type, Label, `Stats / Values`, `Freqs (% of Valid)`, Valid, Missing))
+# 
+# new_tool_labels <- dfSummary(intakes_new_tool) %>%
+#   select(-c(No, Graph, text.graph))
+# 
+# new_tool_labels$Variable <- strsplit(new_tool_labels$Variable, "\\\\")
+# new_tool_labels$Var <- sapply(new_tool_labels$Variable, `[`, 1)
+# new_tool_labels$Type <- sapply(new_tool_labels$Variable, `[`, 2)
+# 
+# new_tool_labels <- new_tool_labels %>%
+#   select(c(Var, Type, Label, `Stats / Values`, `Freqs (% of Valid)`, Valid, Missing))
+# 
+# write.xlsx(old_tool_labels, "qualtrics_codebook/old_tool_labels.xlsx")
+# write.xlsx(new_tool_labels, "qualtrics_codebook/new_tool_labels.xlsx")
+
+```
+
+Export fu/dis variable labels 
+
+```{r fu dis label export, include=FALSE}
+
+# ONLY run this commented out section once to export qualtrics labels and create codebook in excel. no need to run again. 
+# labels <- dfSummary(la_data) %>%
+#   select(-c(No, Graph, text.graph))
+# 
+# labels$Variable <- strsplit(labels$Variable, "\\\\")
+# labels$Var <- sapply(labels$Variable, `[`, 1)
+# labels$Type <- sapply(labels$Variable, `[`, 2)
+# 
+# labels <- labels %>%
+#   select(c(Var, Type, Label, `Stats / Values`, `Freqs (% of Valid)`, Valid, Missing))
+# 
+# write.xlsx(labels, "qualtrics_codebook/fu_dis_labels.xlsx")
+
+```
+
+Merge "good" intake response IDs with raw qualtrics data
+
+```{r create good intakes, include=FALSE}
+
+all_intakes <- tsheet_data %>% select(Intake_ResponseID, GPRA_Status_in)
+
+# intakes_old_tool_good <- all_intakes %>% 
+#   filter(GPRA_Status_in == "old") %>% 
+#   select(-c(GPRA_Status_in)) %>% 
+#   rename(ResponseId = Intake_ResponseID) %>%
+#   left_join(., intakes_old_tool) 
+
+intakes_new_tool_good <- all_intakes %>% 
+  filter(GPRA_Status_in == "new") %>% 
+  select(-c(GPRA_Status_in)) %>% 
+  rename(ResponseId = Intake_ResponseID) %>%
+  left_join(., intakes_new_tool)
+
+```
+
+Identify "latest assessments"
+
+```{r id matched, include=FALSE}
+
+la_matched <- tsheet_data %>% 
+  filter(!(is.na(`Follow-up Type`) & is.na(`Discharge Type`))) %>% # filter those with no fu or discharge 
+  filter(!(`Follow-up Type` == "Administrative" & `Discharge Type` == "Administrative")) %>% # filter those with admin fu and admin discharge only 
+  filter(!(is.na(`Follow-up Type`) & `Discharge Type` == "Administrative")) %>% # filter those with no fu and admin discharge
+  filter(!(`Follow-up Type` == "Administrative" & is.na(`Discharge Type`))) %>% # filter those with no discharge and admin fu
+  filter(is.na(FU_InterviewDate) | FU_InterviewDate < "2024-10-01") %>% # filter out any interview fu surveys that were after end of Y5
+  filter(is.na(Discharge_InterviewDate) | Discharge_InterviewDate < "2024-10-01") %>% # filter out any interview dis surveys that were after end of Y5
+  mutate(interviews_completed = case_when( # create var for which point(s) an interview was conducted
+    `Follow-up Type` %in% "Interview" & `Discharge Type` %in% "Interview" ~ "fu and dis",
+    `Follow-up Type` %in% "Interview" & !`Discharge Type` %in% "Interview" ~ "fu only",
+    !`Follow-up Type` %in% "Interview" & `Discharge Type` %in% "Interview" ~ "dis only"
+  )) %>% 
+  mutate(latest_assessment = case_when( # determine latest assessment based on whatever was most recent interview
+    interviews_completed == "fu only" ~ "fu",
+    interviews_completed == "dis only" ~ "dis",
+    interviews_completed == "fu and dis" & Discharge_InterviewDate > FU_InterviewDate ~ "dis",
+    interviews_completed == "fu and dis" & Discharge_InterviewDate < FU_InterviewDate ~ "fu",
+    interviews_completed == "fu and dis" & Discharge_InterviewDate == FU_InterviewDate ~ "dis"
+  )) %>% 
+  mutate(latest_assessment_response_id = case_when( # assign latest assessment response id
+    latest_assessment == "dis" ~ Discharge_ResponseId,
+    latest_assessment == "fu" ~ FU_ResponseID
+  )) %>% 
+  mutate(latest_assessment_gpra_status = case_when( # assign latest assessment gpra status
+    latest_assessment == "dis" ~ GPRA_Status_dis,
+    latest_assessment == "fu" ~ GPRA_Status_fu
+  )) %>% 
+  select(latest_assessment_response_id, latest_assessment_gpra_status)
+
+saveRDS(la_matched, "data/latest_assessment_response_ids.rds")
+
+```
+
+Merge "good" latest-assessment response IDs with raw qualtrics data
+
+```{r create good las, include=FALSE}
+
+la_data <- la_matched %>% 
+  rename(ResponseId = latest_assessment_response_id) %>% 
+  filter(latest_assessment_gpra_status == "new") %>% 
+  select(-c(latest_assessment_gpra_status)) %>% 
+  left_join(., fu_dis_new_tool, by = "ResponseId") # merge raw qualtrics data with response ID's that are "good" 
+
+```
+
+Do cleaning of old tool intakes before appending
+
+```{r drop old var intakes, include=FALSE}
+
+# First, drop vars that are not in new tool/not relevant 
+
+old_var_to_drop <- intake_codebook %>% 
+  filter(notes.on.recoding == "drop from old tool before appending" | 
+           notes.on.recoding == "drop from both tools before append ") %>% 
+  select(old_tool_var) %>% 
+  as.list()
+
+# intakes_old_tool_good <- intakes_old_tool_good %>% 
+#   select(-c(unlist(old_var_to_drop)))
+
+```
+
+```{r rename old tool intakes, include=FALSE}
+
+# Next, rename old vars to be consistent with new vars, where appropriate 
+
+# intake_codebook <- intake_codebook %>% 
+#   mutate(new_tool_var = ifelse(is.na(new_tool_var), old_tool_var, new_tool_var)) 
+
+old_names <- intake_codebook %>% 
+  filter(!is.na(all_label)) %>% 
+  filter(!is.na(old_tool_var)) %>% 
+  select(old_tool_var) 
+
+old_names <- unlist(old_names$old_tool_var)
+
+new_names <- intake_codebook %>% 
+  filter(!is.na(all_label)) %>% 
+  filter(!is.na(old_tool_var)) %>% 
+  select(all_label) 
+
+new_names <- unlist(new_names$all_label)
+
+# intakes_old_tool_good <- setnames(intakes_old_tool_good, old = old_names, new = new_names, skip_absent = TRUE)
+
+# duplicate_names <- duplicated(names(intakes_old_tool_good))
+# if (any(duplicate_names)) {
+#   # Rename duplicate columns
+#   unique_names <- make.unique(names(intakes_old_tool_good), sep = "_")
+#   names(intakes_old_tool_good) <- unique_names
+# }
+# 
+# intakes_old_tool_good <- intakes_old_tool_good %>% 
+#   mutate(tool = "old")
+
+```
+
+Do cleaning of new tool intakes before appending
+
+```{r drop new var, include=FALSE}
+
+# First, drop vars that are not relevant 
+
+new_var_to_drop <- intake_codebook %>% 
+  filter(notes.on.recoding == "drop from new tool before appending" | 
+           notes.on.recoding == "drop from both tools before append ") %>% 
+  select(new_tool_var) %>% 
+  as.list()
+
+intakes_new_tool_good <- intakes_new_tool_good %>% 
+  select(-c(unlist(new_var_to_drop)))
+
+```
+
+```{r rename new tool intakes, include=FALSE}
+
+# Next, rename old vars to be consistent with new vars, where appropriate 
+
+# intake_codebook <- intake_codebook %>% 
+#   mutate(new_tool_var = ifelse(is.na(new_tool_var), old_tool_var, new_tool_var)) 
+
+old_names <- intake_codebook %>% 
+  filter(!is.na(all_label)) %>% 
+  filter(!is.na(new_tool_var)) %>% 
+  select(new_tool_var) 
+
+old_names <- unlist(old_names$new_tool_var)
+
+new_names <- intake_codebook %>% 
+  filter(!is.na(all_label)) %>% 
+  filter(!is.na(new_tool_var)) %>% 
+  select(all_label) 
+
+new_names <- unlist(new_names$all_label)
+
+intakes_new_tool_good <- setnames(intakes_new_tool_good, old = old_names, new = new_names, skip_absent = TRUE)
+
+intakes_new_tool_good <- intakes_new_tool_good %>% mutate(tool = "new")
+
+```
+
+Append old tool to new tool intakes
+
+```{r append intakes, include=FALSE}
+
+# make everything character 
+
+# intakes_old_tool_good <- data.frame(lapply(intakes_old_tool_good, as.character), stringsAsFactors = FALSE)
+intakes_new_tool_good <- data.frame(lapply(intakes_new_tool_good, as.character), stringsAsFactors = FALSE)
+
+intakes <- intakes_new_tool_good %>% 
+  clean_names() %>% 
+  mutate(interview_type = "Intake")
+
+```
+
+Do cleaning of new tool latest assessments before appending
+
+```{r la var renaming, include=FALSE}
+
+# drop unneeded variables
+
+var_to_drop <- fu_dis_codebook %>% 
+  filter(notes == "drop") %>% 
+  select(Var) %>% 
+  as.list()
+
+la_data <- la_data %>% 
+  select(-c(unlist(var_to_drop)))
+
+# rename for consistency with intake data
+
+old_names <- fu_dis_codebook %>% 
+  filter(!is.na(new_name)) %>% 
+  select(Var) %>% 
+  unlist()
+
+new_names <- fu_dis_codebook %>% 
+  filter(!is.na(new_name)) %>% 
+  select(new_name) %>% 
+  unlist()
+
+la_data <- setnames(la_data, old = old_names, new = new_names, skip_absent = TRUE) %>% 
+  clean_names()
+```
+
+Append all intake data to latest assessment data
+
+```{r intake to la append, include=FALSE}
+
+la_data <- data.frame(lapply(la_data, as.character), stringsAsFactors = FALSE)
+
+gpra_matched <- bind_rows(intakes, la_data) %>% 
+  mutate(tool = case_when(
+    tool == "new" ~ "intake new",
+    tool == "old" ~ "intake old",
+    is.na(tool) ~ "fu/dis new"
+  ))
+
+# View data frame summary - this will appear in your "viewer" tab in lower right. click the "show in new window" icon and it'll open up in your web browser. use this summary as a guide to your data cleaning. 
+
+# view(dfSummary(gpra_matched))
+
+# examine n of matches
+
+#tabyl(gpra_matched, tool)
+# 
+# gpra_matched_new <- gpra_matched %>%
+#   filter(tool != "intake old") %>%
+#   group_by(client_id) %>%
+#   filter(n() > 1) %>%
+#   ungroup()
+# 
+# length(unique(gpra_matched_new$client_id))
+# 
+# gpra_matched_new %>%
+#   tabyl(csb_name) %>%
+#   arrange(-n) %>%
+#   mutate(actual = n/2) # n matches by csb
+# 
+# gpra_matched_old <- gpra_matched %>%
+#   filter(tool != "intake new") %>%
+#   group_by(client_id) %>%
+#   filter(n() > 1) %>%
+#   ungroup()
+# 
+# gpra_matched_old %>%
+#   tabyl(csb_name) %>%
+#   arrange(-n) %>%
+#   mutate(actual = n/2) # n matches by csb
+# 
+# length(unique(gpra_matched_old$client_id))
+# 
+# gpra_matched_all <- gpra_matched %>%
+#   group_by(client_id) %>%
+#   filter(n() > 1) %>%
+#   ungroup()
+# 
+# gpra_matched_all %>%
+#   tabyl(csb_name) %>%
+#   arrange(-n) %>%
+#   mutate(actual = n/2) # n matches by csb
+# 
+# length(unique(gpra_matched$client_id))
+
+```
+
+### Cleaning
+
+```{r interview date, include=FALSE}
+
+# In old tool, interview date collected as three separate M D Y variables. Will combine into one interview date field for the old tool and then coalesce with interview date field in new tool. 
+
+gpra_matched <- gpra_matched %>% 
+  #mutate(interviewdate_s2 = make_date(year, match(month, month.name), day)) %>% 
+  mutate(interview_date = mdy(interview_date)) # %>% 
+  #mutate(interview_date = coalesce(interview_date, interviewdate_s2)) %>% 
+  #select(-c(month, day, year, interviewdate_s2))
+
+```
+
+```{r referral, include=FALSE}
+
+# tabyl(gpra_matched, o_referral, tool) ## looks good
+
+```
+
+```{r admit date, include=FALSE}
+
+# make admit date a date 
+gpra_matched <-
+  gpra_matched %>% 
+  mutate(admit_date = mdy(admit_date))
+
+```
+
+```{r dis date, include=FALSE}
+
+# make discharge date a date 
+gpra_matched <- gpra_matched %>% 
+  mutate(d_discharge_date = mdy(d_discharge_date))
+
+```
+
+```{r term reason, include=FALSE}
+
+# clean term reason
+tabyl(gpra_matched, d_term_reason, tool) 
+
+```
+
+```{r svc loc, include=FALSE}
+
+# tabyl(gpra_matched, srvc_location, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(srvc_location = ifelse(srvc_location == "CSB clinic (in person or virtual)",
+                                 "CSB/Agency clinic (in person or virtual)",
+                                 srvc_location))
+
+```
+
+```{r services received , include=FALSE}
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(starts_with("d_svc_rvd_") & 
+                   !contains("text") & 
+                   (ends_with("_days") | ends_with("_sess"))), 
+            ~  as.numeric(.)) 
+
+```
+
+```{r med rcvd, include=FALSE}
+
+# clean vars starting with d_med_rvd and d_int_rvd (that do not include text) to 1/0
+
+gpra_matched <-
+  gpra_matched %>% mutate_at(
+    vars((starts_with("d_med_rvd") | starts_with("d_int_rvd")) & 
+           !contains("text") & 
+           !ends_with("_days") & 
+           !ends_with("_doses")), 
+    ~ if_else(is.na(.), 0, 1)) 
+
+```
+
+```{r Dx vars, include=FALSE}
+
+# clean all disorder vars so that any character present (which indicates client has dx for that dx) is converted to 1 and any NA (which indicates client does not have dx for that dx) is converted to 0
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(starts_with("dx_") & 
+                   !contains("text")), 
+            ~ case_when(mh_diagnosis_s3 == "REFUSED" ~ NA_real_, # refused in s3 or don't know in s2
+                        is.na(.) ~ 0,
+                        TRUE ~ 1))
+
+# removed this from script:  | !is.na(dx_dont_know_s2) 
+# tabyl(gpra_matched, dx_major_dep_recurr, tool)
+
+```
+
+```{r med vars, include=FALSE}
+
+# clean all med vars so that any character present (which indicates med was taken for that med) is converted to 1 and any NA (which indicates no med was taken for that med) is converted to 0
+
+# tabyl(gpra_matched, med_alc_ex_naltrexone, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars((starts_with("med_") | starts_with("int_stim_")) &
+                   !contains("days") &
+                   !contains("insurance") &
+                   !contains("doses")),
+            ~ if_else(is.na(.), 0, 1))
+
+# Fix so that if no su dx is indicated, meds associated with that su dx are marked NA
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars((starts_with("med_opioid_")) &
+                   !contains("days") &
+                   !contains("insurance") &
+                   !contains("doses") &
+                   !contains("_no_")),
+            ~ if_else(med_opioid_no_oud == 1, NA_real_, .))
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars((starts_with("med_alc_")) &
+                   !contains("days") &
+                   !contains("insurance") &
+                   !contains("doses") &
+                   !contains("_no_")),
+            ~ if_else(med_alc_no_aud == 1, NA_real_, .))
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars((starts_with("med_tob_")) &
+                   !contains("days") &
+                   !contains("insurance") &
+                   !contains("doses") &
+                   !contains("_no_")),
+            ~ if_else(med_tob_no_tud_s3 == 1, NA_real_, .))
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars((starts_with("int_stim_")) &
+                   !contains("days") &
+                   !contains("insurance") &
+                   !contains("doses") &
+                   !contains("_no_")),
+            ~ if_else(int_stim_no_stim_ud_s3 == 1, NA_real_, .))
+
+# gpra_matched %>% filter(interview_type == "6-month follow-up") %>% select(starts_with("med_"))
+
+# gpra_matched %>% filter(interview_type == "6-month follow-up") %>% select(starts_with("int_stim_"))
+
+# tabyl(gpra_matched, med_opioid_methadone, med_opioid_no_oud)
+
+```
+
+```{r days, include=FALSE}
+
+# clean all days and doses vars so that they are numeric
+
+gpra_matched <- gpra_matched %>% mutate_at(vars(ends_with("_days") & !contains("text")), ~ as.numeric(.))
+gpra_matched <- gpra_matched %>% mutate_at(vars(ends_with("_doses") & !contains("text")), ~ as.numeric(.))
+
+```
+
+```{r planned svc, include=FALSE}
+
+# clean all planned svc vars so that any character present (which indicates svc is planned) is converted to 1 and any NA (which indicates is not planned) is converted to 0 - EXCEPT other text columns, which should be kept as text 
+
+gpra_matched <- gpra_matched %>% mutate_at(vars(starts_with("planned_svc") & !contains("text") & !contains("days")), ~ if_else(is.na(.), 0, 1))
+
+# special cleaning for trt_rec_plan_s3 and rss_rec_planning_s3: based on SAMSHA QxQ these two services appear identical. we're going to create a single variable trt_rss_rec_plan_s3 that = 1 if either trt_rec_plan_s3 or rss_rec_planning_s3 = 1, and then drop the original 2 dups. 
+
+gpra_matched <- gpra_matched %>%
+  mutate(planned_svc_trt_rss_rec_plan_s3 = case_when(
+    (planned_svc_trt_rec_plan_s3 == 1 | planned_svc_rss_rec_planning_s3 == 1) ~ 1, 
+    TRUE ~ 0
+  )) %>% 
+  select(-c(planned_svc_trt_rec_plan_s3, planned_svc_rss_rec_planning_s3))
+
+
+```
+
+```{r gender, include=FALSE}
+
+### FINAL DECISION: 2 people that ID'd as "DO NOT IDENTIFY AS MALE, FEMALE, OR TRANSGENDER" and 2 people that ID'd as 'TRANSGENDER' in old tool - recode to 'other' in new tool
+
+gpra_matched <- gpra_matched %>% 
+  mutate(gender = case_when(
+    gender == "FEMALE" ~ "Female",
+    gender == "MALE" ~ "Male",
+    gender == "DO NOT IDENTIFY AS MALE, FEMALE, OR TRANSGENDER" ~ "Other (Specify)",  
+    gender == "TRANSGENDER" ~ "Other (Specify)", 
+    gender == "REFUSED" ~ NA_character_,
+    TRUE ~ gender
+  ))
+
+# tabyl(gpra_matched, gender, tool)
+
+```
+
+```{r sexual orientation, include=FALSE}
+
+### FINAL DECISION: 
+# 38 bisexual in old tool recode to bisexual in new tool
+# DON'T KNOW in old tool recode to other in new tool
+# Gay/lesbian in old tool recode to homosexual in new tool
+# other in old tool recode to other in new tool
+# refused in old tool recode to refused in new tool 
+# Straight/heterosexual in old tool recode to straight or heterosexual in new tool 
+# THEN
+# create new var sexual_orientation_combined = 
+# straight/hetero if ONLY straight or heterosexual was selected
+# LGBTQ+ if ANY of homosexual, bisexual, queer, asexual, other were selected
+# and refused if refused
+
+# gpra_matched <- gpra_matched %>% 
+#   mutate(sexual_orientation_bisex_s3 = case_when(
+#     sexual_orientation_s2 == "Bisexual" ~ "Bisexual",
+#     TRUE ~ sexual_orientation_bisex_s3),
+#     sexual_orientation_other_s3 = case_when(
+#       sexual_orientation_s2 == "DON'T KNOW" ~ "Other (Specify)",
+#       sexual_orientation_s2 == "Other" ~ "Other (Specify)",
+#       TRUE ~ sexual_orientation_other_s3),
+#     sexual_orientation_homo_s3 = case_when(
+#       sexual_orientation_s2 == "Gay/lesbian" ~ "Homosexual (Gay Or Lesbian)",
+#       TRUE ~ sexual_orientation_homo_s3),
+#     sexual_orientation_refused_s3 = case_when(
+#       sexual_orientation_s2 == "REFUSED" ~ "REFUSED",
+#       TRUE ~ sexual_orientation_refused_s3),
+#     sexual_orientation_straight_s3 = case_when(
+#       sexual_orientation_s2 == "Straight/heterosexual" ~ "Straight or Heterosexual",
+#       TRUE ~ sexual_orientation_straight_s3)) 
+
+### NOTE FROM LEON: "Other (Specify)" might require re-recoding; I'm not sure if this was the actual variable spelling, since it's all NAs right now and I can't see the different levels
+
+# tabyl(gpra_matched, sexual_orientation_s2, tool)
+
+# tabyl(gpra_matched, sexual_orientation_bisex_s3, tool)
+# tabyl(gpra_matched, sexual_orientation_other_s3, tool)
+# tabyl(gpra_matched, sexual_orientation_homo_s3, tool)
+# tabyl(gpra_matched, sexual_orientation_refused_s3, tool)
+# tabyl(gpra_matched, sexual_orientation_straight_s3, tool)
+
+# tabyl(gpra_matched, sexual_orientation_queer_s3, tool)
+# tabyl(gpra_matched, sexual_orientation_asex_s3, tool)
+
+gpra_matched <- gpra_matched %>% mutate(
+  sexual_orientation_combined = case_when(
+    sexual_orientation_homo_s3 == "Homosexual (Gay Or Lesbian)" ~ "LGBTQ+",
+    sexual_orientation_bisex_s3 == "Bisexual" ~ "LGBTQ+",
+    sexual_orientation_queer_s3 == "Queer, Pansexual, And/Or Questioning" ~ "LGBTQ+",
+    sexual_orientation_asex_s3 == "Asexual" ~ "LGBTQ+",
+    sexual_orientation_other_s3 == "Other (Specify)" ~ "LGBTQ+",
+    sexual_orientation_straight_s3 == "Straight or Heterosexual" ~ "Straight or Heterosexual",
+    sexual_orientation_refused_s3 == "REFUSED" ~ NA_character_)
+)
+
+# tabyl(gpra_matched, sexual_orientation_combined, tool)
+
+```
+
+```{r ethnicity, include=FALSE}
+
+# tabyl(gpra_matched, hispanic_latino, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(hispanic_latino = case_when(
+    hispanic_latino == "YES" ~ "Yes",
+    hispanic_latino == "NO" ~ "No",
+    hispanic_latino == "REFUSED" ~ NA_character_,
+    TRUE ~ hispanic_latino
+  ))
+
+# no one in old tool ever refused these
+# tabyl(gpra_matched, ethnic_central_american)
+# tabyl(gpra_matched, ethnic_cuban)
+# tabyl(gpra_matched, ethnic_dominican)
+# tabyl(gpra_matched, ethnic_mexican)
+# tabyl(gpra_matched, ethnic_puerto_rican)
+# tabyl(gpra_matched, ethnic_south_american)
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(starts_with("ethnic") & !contains("text") & !contains("refused")),
+                                           ~ case_when(. == "No" ~ 0, # old tool 
+                                                       . == "Yes" ~ 1, # old tool 
+                                                       ethnic_refused_s3 == "REFUSED" ~ NA_real_, # new tool
+                                                       !is.na(.) ~ 1, # new tool
+                                                       TRUE ~ 0)) # new tool
+
+```
+
+```{r race, include=FALSE}
+
+gpra_matched <- gpra_matched %>% 
+  mutate(race_refused = case_when(
+    race_black == "Refused" | race_american_indian == "Refused" ~ 1, # proxy for if race was refused in old tool at all
+    race_refused_s3 == "REFUSED" ~ 1, 
+    TRUE ~ 0 
+  )) %>% 
+  select(-c(race_refused_s3))
+
+## QUESTION: Is this correct. The respondent who refused for race_american_indian indicated also being White
+# gpra_matched %>% filter(race_american_indian == "Refused") %>% select(starts_with("race_"))
+
+gpra_matched <- gpra_matched %>% mutate_at(vars(starts_with("race_") & !contains("text") & !contains("refused")),
+                                           ~ case_when(. == "No" ~ 0,
+                                                       . == "Refused" ~ NA_real_, # if it's refused, then race is NA
+                                                       is.na(.) & race_refused != 1 ~ 0, # if it's na & race wasn't refused, then NA means "not this race"
+                                                       is.na(.) & race_refused == 1 ~ NA_real_, # if it's na & race was refused, then NA means NA
+                                                       TRUE ~ 1))
+
+# tabyl(gpra_matched, race_black, tool)
+# tabyl(gpra_matched, race_white, tool)
+# tabyl(gpra_matched, race_alaska_native, tool)
+# tabyl(gpra_matched, race_american_indian, tool)
+
+#tabyl(gpra_matched, race_asian_combined, tool)
+
+### FINAL DECISION: create new variable asian_combined = 
+# 1 if "asian" selected in old tool
+# 1 if asian_indian, chinese, filipino, japanese, korean, vietnamese, other asian selected in new tool
+# NA if race was refused in old tool or new tool 
+# 0 in any other case
+
+gpra_matched <- gpra_matched %>% 
+  mutate(race_asian_combined = case_when(
+    race_refused == 1 ~ NA_real_,
+    #race_asian_s2 == 1 ~ 1,
+    race_asian_asian_indian_s3 == 1 ~ 1,
+    race_asian_chinese_s3 == 1 ~ 1,
+    race_asian_filipino_s3 == 1 ~ 1,
+    race_asian_japanese_s3 == 1 ~ 1,
+    race_asian_korean_s3 == 1 ~ 1,
+    race_asian_viet_s3 == 1 ~ 1,
+    race_asian_other_s3 == 1 ~ 1,
+    TRUE ~ 0))
+
+# tabyl(gpra_matched, race_asian_combined, tool)
+
+# tabyl(gpra_matched, race_asian_s2, tool) #6 old
+# tabyl(gpra_matched, race_asian_asian_indian_s3, tool) #0
+# tabyl(gpra_matched, race_asian_chinese_s3, tool) #0
+# tabyl(gpra_matched, race_asian_filipino_s3, tool) #1 new
+# tabyl(gpra_matched, race_asian_japanese_s3, tool) #0
+# tabyl(gpra_matched, race_asian_korean_s3, tool) #2 new
+# tabyl(gpra_matched, race_asian_viet_s3, tool) #0
+# tabyl(gpra_matched, race_asian_other_s3, tool) #1 new
+
+### FINAL DECISION: Pacific Islander = same approach as done for Asian above
+
+gpra_matched <- gpra_matched %>% 
+  mutate(race_pac_is_combined = case_when(
+    race_refused == 1 ~ NA_real_,
+    #race_pac_is_s2 == 1 ~ 1,
+    race_pac_is_hi_s3 == 1 ~ 1,
+    race_pac_is_guat_chamorro_s3 == 1 ~ 1,
+    race_pac_is_samoan_s3 == 1 ~ 1,
+    race_pac_is_other_s3 == 1 ~ 1,
+    TRUE ~ 0))
+
+# tabyl(gpra_matched, race_pac_is_combined, tool) 
+
+# tabyl(gpra_matched, race_pac_is_s2, tool) #3 old
+# tabyl(gpra_matched, race_pac_is_hi_s3, tool) #0
+# tabyl(gpra_matched, race_pac_is_guat_chamorro_s3, tool) #1 new
+# tabyl(gpra_matched, race_pac_is_samoan_s3, tool) #0
+# tabyl(gpra_matched, race_pac_is_other_s3, tool) #2 new
+
+### FINAL DECISION: probably will recode 'others' - systematic approach pending
+
+# tabyl(gpra_matched, race_spec_other_s3, tool)
+# tabyl(gpra_matched, race_spec_other_text_s3, tool)
+
+# tabyl(gpra_matched, race_refused_s3, tool)
+# tabyl(gpra_matched, race_refused, tool)
+
+```
+
+```{r intake age, include=FALSE}
+
+lookup_table <- c("Jan" = "January", 
+                  "Feb" = "February", 
+                  "Mar" = "March",
+                  "Apr" = "April", 
+                  "May" = "May", 
+                  "Jun" = "June",
+                  "Jul" = "July", 
+                  "Aug" = "August", 
+                  "Sept" = "September",
+                  "Oct" = "October", 
+                  "Nov" = "November", 
+                  "Dec" = "December")
+
+gpra_matched <- gpra_matched %>% 
+  mutate(birth_month_2 = case_when(
+    birth_month %in% names(lookup_table) ~ lookup_table[birth_month],
+    birth_month == "REFUSED" ~ NA_character_,
+    TRUE ~ birth_month
+  )) %>% 
+  mutate(dob = make_date(birth_year, match(birth_month_2, month.name), "01")) %>% 
+  mutate(age_at_intake = as.numeric(difftime(interview_date, dob, units = "days")/365.25)) 
+
+# View(gpra_matched %>% select(birth_month, birth_month_2, birth_year, dob, interview_date, age_at_intake))
+
+```
+
+```{r military, include=FALSE}
+
+gpra_matched <- gpra_matched %>% 
+  mutate(military_served = case_when(military_served == "REFUSED" ~ NA_character_,
+                                         TRUE ~ str_to_title(military_served)))
+
+```
+
+```{r p30 days, include=FALSE}
+
+# clean all s3 days and doses vars so that they are numeric 
+
+# tabyl(gpra_matched, illegal_drug_ever_s2)
+# tabyl(gpra_matched, illegal_drug_days_s2)
+
+## MT NEED to revisit this. in SOR 2, may substances were only asked about in some cases. need to be careful about we can assume _days = 0 vs when _days = NA. 
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(starts_with("p30_") & ends_with("_days_s3") & 
+                   !contains("text")), 
+            ~ case_when(
+              (tool == "intake new" | tool == "fu/dis new") & is.na(past30_refused_s3) & is.na(.) ~ 0,
+              (tool == "intake new" | tool == "fu/dis new") & !is.na(past30_refused_s3) ~ NA, 
+              tool == "intake old" ~ NA, 
+              TRUE ~ as.numeric(.)
+            ))
+
+# create var without 'days' that is just a 0/1 binary for if days >0 
+
+p30_days_vars <- gpra_matched %>% 
+  select(c(starts_with("p30_") & ends_with("_days_s3") & !contains("text"))) %>% 
+  colnames()
+
+for (i in 1:length(p30_days_vars)) {
+  
+  var_name <- p30_days_vars[i]
+  new_var_name <- str_replace(var_name, "_days", "")
+  
+  gpra_matched <- gpra_matched %>%
+    mutate({{ new_var_name }} := case_when(
+      .[[{{ var_name }}]] > 0 ~ 1,
+      .[[{{ var_name }}]] == 0 ~ 0,
+      TRUE ~ NA_real_
+    ))
+}
+```
+
+```{r p30 opioid combined, include=FALSE}
+
+p30_opioids_vars <- gpra_matched %>% 
+  select(c(starts_with("p30_") & contains("_days_s3") & contains("opioid") & !contains("text"))) %>%
+  colnames() %>% 
+  sub("_days", "", .) %>% 
+  as.vector(mode = "character")
+
+gpra_matched$p30_any_opioid_comb_s3 = ifelse(rowSums(gpra_matched[p30_opioids_vars], na.rm = TRUE) > 0, 1, 0) # create 1/0 var if any opioid used in past 30
+
+# gpra_matched %>% 
+#   select(c(p30_opioids_vars, p30_any_opioid_comb_s3)) %>% View()
+
+gpra_matched$p30_other_opioid_ex_her_fent_comb_s3 = ifelse(rowSums(gpra_matched[setdiff(p30_opioids_vars, c("p30_opioids_heroin", "p30_opioids_fentanyl"))], na.rm = TRUE), 1, 0) # create 1/0 var if any opioid EXCLUDING FENT and HERION used in past 30
+
+# gpra_matched %>%
+#   select(c(p30_opioids_vars, p30_any_opioid_comb_s3, p30_other_opioid_ex_her_fent_comb_s3)) %>% View()
+
+```
+
+```{r p30 stim combined, include=FALSE}
+
+p30_stim_vars <- gpra_matched %>% 
+  select(c(starts_with("p30_") & contains("_days_s3") & (contains("crack") | contains("cocain") | contains("metham")) & !contains("text"))) %>%
+  colnames() %>% 
+  sub("_days", "", .) %>% 
+  as.vector(mode = "character")
+
+gpra_matched$p30_any_stim_comb_s3 = ifelse(rowSums(gpra_matched[p30_stim_vars], na.rm = TRUE) > 0, 1, 0) # create 1/0 var if any stim used in past 30
+
+
+gpra_matched$p30_crack_coke_comb_s3 = ifelse(rowSums(gpra_matched[setdiff(p30_stim_vars, c("p30_metham"))], na.rm = TRUE), 1, 0) # create 1/0 var if any crack or coke used in past 30
+
+
+```
+
+```{r p30 opioid AND stim combined, include=FALSE}
+
+p30_opioid_stim_vars <- c("p30_any_stim_comb_s3", "p30_any_opioid_comb_s3")
+
+# tabyl(gpra_matched, p30_any_opioid_and_stim_comb_s3)
+
+gpra_matched$p30_any_opioid_and_stim_comb_s3 = ifelse(rowSums(gpra_matched[p30_opioid_stim_vars], na.rm = TRUE) == 2, 1, 0) # create 1/0 var if any opioid AND stim used in past 30
+
+```
+
+```{r p30 opioid NO stim combined, include=FALSE}
+
+
+gpra_matched$p30_any_opioid_no_stim_comb_s3 = ifelse((gpra_matched$p30_any_opioid_comb_s3 == 1 & gpra_matched$p30_any_stim_comb_s3 == 0), 1, 0) # create 1/0 var if any opioid AND stim used in past 30
+
+# tabyl(gpra_matched, p30_any_opioid_no_stim_comb_s3)
+
+```
+
+```{r p30 stim NO opioids combined, include=FALSE}
+
+
+gpra_matched$p30_any_stim_no_opioid_comb_s3 = ifelse((gpra_matched$p30_any_opioid_comb_s3 == 0 & gpra_matched$p30_any_stim_comb_s3 == 1), 1, 0) # create 1/0 var if any opioid AND stim used in past 30
+
+# tabyl(gpra_matched, p30_any_stim_no_opioid_comb_s3)
+
+```
+
+```{r p30 alc tob combined, include=FALSE}
+
+p30_tob_alc_vars <- gpra_matched %>% 
+  select(c(starts_with("p30_") & contains("_days_s3") & (contains("alc") | contains("tob") | contains("nic")) & !contains("text"))) %>%
+  colnames() %>% 
+  sub("_days", "", .) %>% 
+  as.vector(mode = "character")
+
+gpra_matched$p30_tob_comb_no_nic_s3 = ifelse(rowSums(gpra_matched[setdiff(p30_tob_alc_vars, c("p30_alcohol_other_s3", "p30_alcohol", "p30_nicotine_s3"))], na.rm = TRUE), 1, 0) 
+
+gpra_matched$p30_tob_comb_incl_nic_s3 = ifelse(rowSums(gpra_matched[setdiff(p30_tob_alc_vars, c("p30_alcohol_other_s3", "p30_alcohol", "p30_nicotine_s3"))], na.rm = TRUE), 1, 0) 
+
+
+```
+
+```{r p30 mj combined, include=FALSE}
+
+p30_mj_vars <- gpra_matched %>% 
+  select(c(starts_with("p30_") & contains("_days_s3") & (contains("cann") | contains("marij")) & !contains("text"))) %>%
+  colnames() %>% 
+  sub("_days", "", .) %>% 
+  as.vector(mode = "character")
+
+gpra_matched$p30_any_mj_comb_s3 = ifelse(rowSums(gpra_matched[p30_mj_vars], na.rm = TRUE) > 0, 1, 0) # create 1/0 var if any mj used in past 30
+
+```
+
+```{r p30 ALL sub combined, include=FALSE}
+
+p30_vars_all <- p30_days_vars %>% 
+  sub("_days", "", .) %>% 
+  as.vector(mode = "character")
+
+gpra_matched$p30_any_sub_comb_s3 = ifelse(rowSums(gpra_matched[p30_vars_all], na.rm = TRUE) > 0, 1, 0) # create 1/0 var if any sub used in past 30
+
+p30_vars_ex_tob <- p30_vars_all[!p30_vars_all %in% c("p30_tobacco_s3", "p30_nicotine_s3", "p30_tobacco_other_s3")]
+
+gpra_matched$p30_any_sub_ex_tob_comb_s3 = ifelse(rowSums(gpra_matched[p30_vars_ex_tob], na.rm = TRUE) > 0, 1, 0) # create 1/0 var if any sub used in past 30
+
+p30_vars_ex_tob_alc_mj <- p30_vars_ex_tob[!p30_vars_ex_tob %in% c("p30_alcohol_s3", "p30_alcohol_other_s3", "p30_marijuana_s3", "p30_synth_cann_s3", "p30_cann_other_s3")]
+
+gpra_matched$p30_any_sub_ex_tob_alc_mj_comb_s3 = ifelse(rowSums(gpra_matched[p30_vars_ex_tob_alc_mj], na.rm = TRUE) > 0, 1, 0) # create 1/0 var if any sub used in past 30
+  
+```
+
+```{r p30 combined fix for refused, include=FALSE}
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(starts_with("p30_") & ends_with("_s3") & !contains("text") & !contains("days") & contains("comb") & !contains("route")), 
+            ~ case_when(
+              !is.na(past30_refused_s3) ~ NA, 
+              TRUE ~ factor(., levels = c(0,1))
+            ))
+
+```
+
+```{r p30 route, include=FALSE}
+# clean route
+
+tabyl(gpra_matched, p30_opioids_fentanyl_route, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(contains("_route") & !contains("text") & !contains("refused")),
+            ~ case_when(. == "Oral" ~ "1",
+                        . == "Nasal" ~ "2",
+                        . == "Smoking" ~ "4",
+                        . == "Non-IV" ~ "5",
+                        . == "IV" ~ "6",
+                        . == "Other" ~ "0",
+                        . == "DON'T KNOW" ~ .,
+                        . == "REFUSED" ~ .,
+                        !is.na(past30_refused_s3) ~ "REFUSED",
+                        is.na(.) ~ NA_character_,
+                        TRUE ~ .))
+
+# 1. Oral
+# 2. Intranasal
+# 3. Vaping
+# 4. Smoking
+# 5. Non-IV Injection
+# 6. Intravenous (IV) Injection
+# 
+# 0. Other - REFUSED (Only check if client refuses this entire substance use history question. If client provides answers, complete substance table below.)
+
+p30_route_vars <- gpra_matched %>% 
+  select(c(contains("_route") & !contains("text") & !contains("refused"))) %>%
+  colnames() %>% 
+  as.vector(mode = "character")
+
+gpra_matched <- gpra_matched %>%
+  mutate(p30_any_iv_route_comb = ifelse(rowSums(select(., all_of(p30_route_vars)) == "6", na.rm = TRUE) > 0, 1, 0),
+         p30_any_iv_route_comb = ifelse(rowSums(select(., all_of(p30_route_vars)) == "5", na.rm = TRUE) > 0, 1, p30_any_iv_route_comb),
+         p30_any_iv_route_comb = case_when(
+           p30_opioids_heroin_route == "REFUSED" ~ NA,
+           TRUE ~ p30_any_iv_route_comb
+         ))
+
+# tabyl(gpra_matched, p30_opioids_fentanyl_route, p30_any_iv_route_comb)
+
+```
+
+```{r living housed, include=FALSE}
+
+### FINAL DECISION
+# CORRECTIONAL FACILITY (JAIL/PRISON)	 (37) - INSTITUTION (HOSPITAL, NURSING HOME, JAIL/PRISON) (38)
+# DETOX/INPATIENT OR RESIDENTIAL SUBSTANCE ABUSE TREATMENT FACILITY	(9) - RESIDENTIAL TREATMENT	(11)
+# DORMITORY/COLLEGE RESIDENCE (1)  - OWN/RENTAL APARTMENT, ROOM, TRAILER, OR HOUSE (364)  
+# GROUP HOME (2) - RECOVERY RESIDENCE/SOBER LIVING	(92)
+# HOMELESS (SHELTER) (16) - SHELTER (SAFE HAVENS, TRANSITIONAL LIVING CENTER [TLC], LOW-DEMAND FACILITIES, RECEPTION CENTERS, OTHER TEMPORARY DAY OR EVENING FACILITY)	(40)
+# HOMELESS (STREET/OUTDOORS, PARK)	(7)  - STREET/OUTDOORS (SIDEWALK, DOORWAY, PARK, PUBLIC OR ABANDONED BUILDING)	(13)
+# OTHER HOUSED (SPECIFY) (16) - OTHER HOUSED (SPECIFY) (25)
+# OWNED OR RENTED HOUSE, APARTMENT, TRAILER, ROOM (394) - OWN/RENTAL APARTMENT, ROOM, TRAILER, OR HOUSE (364)
+# REFUSED (1) - REFUSED
+# SOMEONE ELSE'S HOUSE, APARTMENT, TRAILER, ROOM (255) - SOMEONE ELSE'S APARTMENT, ROOM, TRAILER, OR HOUSE (INCLUDING COUCH SURFING)	(255)
+# TRANSITIONAL LIVING FACILITY/RECOVERY HOUSING (61) -  RECOVERY RESIDENCE/SOBER LIVING	(92)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(living_housed = case_when(
+    living_housed == "CORRECTIONAL FACILITY (JAIL/PRISON)" ~ "INSTITUTION (HOSPITAL, NURSING HOME, JAIL/PRISON)",
+    living_housed == "DETOX/INPATIENT OR RESIDENTIAL SUBSTANCE ABUSE TREATMENT FACILITY" ~ "RESIDENTIAL TREATMENT",
+    living_housed == "DORMITORY/COLLEGE RESIDENCE" ~ "OWN/RENTAL APARTMENT, ROOM, TRAILER, OR HOUSE",
+    living_housed == "GROUP HOME" ~ "RECOVERY RESIDENCE/SOBER LIVING",
+    living_housed == "HOMELESS (SHELTER)" ~ "SHELTER (SAFE HAVENS, TRANSITIONAL LIVING CENTER [TLC], LOW-DEMAND FACILITIES, RECEPTION CENTERS, OTHER TEMPORARY DAY OR EVENING FACILITY)",
+    living_housed == "HOMELESS (STREET/OUTDOORS, PARK)" ~ "STREET/OUTDOORS (SIDEWALK, DOORWAY, PARK, PUBLIC OR ABANDONED BUILDING)",
+    living_housed == "OTHER HOUSED (SPECIFY)" ~ "OTHER HOUSED (SPECIFY)",
+    living_housed == "OWNED OR RENTED HOUSE, APARTMENT, TRAILER, ROOM" ~ "OWN/RENTAL APARTMENT, ROOM, TRAILER, OR HOUSE",
+    living_housed == "REFUSED" ~ "REFUSED",
+    str_detect(living_housed, "SOMEONE ELSE") ~ "SOMEONE ELSE'S APARTMENT, ROOM, TRAILER, OR HOUSE (INCLUDING COUCH SURFING)",
+    grepl("OTHER HOUSED ", living_housed) ~ "OTHER HOUSED (SPECIFY)",
+    living_housed == "TRANSITIONAL LIVING FACILITY/RECOVERY HOUSING" ~ "RECOVERY RESIDENCE/SOBER LIVING",
+    TRUE ~ living_housed))
+
+kable(tabyl(gpra_matched, living_housed, tool))
+```
+
+```{r}
+### create housing_comb based on this:
+# Housed == 
+# "OWN/RENTAL APARTMENT, ROOM, TRAILER, OR HOUSE"
+# "SOMEONE ELSE'S APARTMENT, ROOM, TRAILER, OR HOUSE (INCLUDING COUCH SURFING)"
+# 
+# Unhoused == 
+# "STREET/OUTDOORS (SIDEWALK, DOORWAY, PARK, PUBLIC OR ABANDONED BUILDING)"
+# "SHELTER (SAFE HAVENS, TRANSITIONAL LIVING CENTER [TLC], LOW-DEMAND FACILITIES, RECEPTION CENTERS, OTHER TEMPORARY DAY OR EVENING FACILITY)" 
+# 
+# Other ==  
+# "HALFWAY HOUSE OR TRANSITIONAL HOUSING" 
+# "INSTITUTION (HOSPITAL, NURSING HOME, JAIL/PRISON)"
+# "RECOVERY RESIDENCE/SOBER LIVING" 
+# "RESIDENTIAL TREATMENT"
+# "OTHER HOUSED (SPECIFY)" 
+# 
+# NA ==
+# "REFUSED"
+
+gpra_matched <- gpra_matched %>% 
+  mutate(housing_comb = case_when(
+    living_housed == "OWN/RENTAL APARTMENT, ROOM, TRAILER, OR HOUSE" ~ "Housed",
+    living_housed == "SOMEONE ELSE'S APARTMENT, ROOM, TRAILER, OR HOUSE (INCLUDING COUCH SURFING)" ~ "Housed",
+    living_housed == "STREET/OUTDOORS (SIDEWALK, DOORWAY, PARK, PUBLIC OR ABANDONED BUILDING)" ~ "Unhoused",
+    living_housed == "SHELTER (SAFE HAVENS, TRANSITIONAL LIVING CENTER [TLC], LOW-DEMAND FACILITIES, RECEPTION CENTERS, OTHER TEMPORARY DAY OR EVENING FACILITY)" ~ "Unhoused",
+    living_housed == "HALFWAY HOUSE OR TRANSITIONAL HOUSING" ~ "Other",
+    living_housed == "INSTITUTION (HOSPITAL, NURSING HOME, JAIL/PRISON)" ~ "Other",
+    living_housed == "RECOVERY RESIDENCE/SOBER LIVING" ~ "Other",
+    living_housed == "RESIDENTIAL TREATMENT" ~ "Other",
+    living_housed == "OTHER HOUSED (SPECIFY)" ~ "Other",
+    living_housed == "REFUSED" ~ NA_character_) %>% factor(., levels = c("Housed", "Unhoused", "Other")))
+```
+
+```{r living cond sat, include=FALSE}
+
+# tabyl(gpra_matched, o_living_cond_sat, tool)
+
+### Reorder to align with survey
+# 1\. Very dissatisfied\
+# 2\. Dissatisfied\
+# 3\. Neither satisfied nor dis\
+# 4\. Satisfied\
+# 5\. Very Satisfied\
+# 6\. REFUSED\
+# 7\. DON'T KNOW
+
+# REFUSED and DON'T KNOW coded as NA 
+
+sat_order <- c("Very dissatisfied", "Dissatisfied", "Neither satisfied nor dissatisfied", "Satisfied", "Very Satisfied")
+
+gpra_matched <- gpra_matched %>% 
+  mutate(o_living_cond_sat_f = factor(o_living_cond_sat, sat_order), 
+         o_living_cond_sat_n = case_when( 
+           o_living_cond_sat == "Very dissatisfied" ~ 1,
+           o_living_cond_sat == "Dissatisfied" ~ 2,
+           o_living_cond_sat == "Neither satisfied nor dissatisfied" ~ 3,
+           o_living_cond_sat == "Satisfied" ~ 4,
+           o_living_cond_sat == "Very Satisfied" ~ 5,
+           TRUE ~ NA_real_)
+  )
+
+# tabyl(gpra_matched, o_living_cond_sat_f, tool)
+# tabyl(gpra_matched, o_living_cond_sat_n, o_living_cond_sat_f)
+
+```
+
+```{r impact, include=FALSE}
+
+# tabyl(gpra_matched, o_impact_activity, tool)
+
+### Reorder to align with survey
+# 1\. Not at all\
+# 2\. Somewhat\
+# 3\. Considerably\
+# 4\. Extremely\
+# 5\. NOT APPLICABLE\
+# 6\. REFUSED\
+# 7\. DON'T KNOW
+
+# NOT APPLICABLE, REFUSED, and DON'T KNOW all coded to NA
+# factor and numeric versions made
+
+### Recode NOT APPLICABLE's from both tools
+gpra_matched <- gpra_matched %>% 
+  mutate(across(
+    .cols = starts_with("o_impact"),
+    .fns = ~ case_when(
+      . == "NOT APPLICABLE [SELECT IF INDIVIDUAL REPORTED NO SUBSTANCES USED IN PAST 30 DAYS ON QUESTION B1.]" |
+        . == "REFUSED" |
+        . == "DON'T KNOW" ~ NA_character_,
+      TRUE ~ .
+  )))
+
+impact_order <- c("Not at all", "Somewhat", "Considerably", "Extremely")
+
+gpra_matched <-
+  gpra_matched %>% 
+  mutate(
+    across(.cols = starts_with("o_impact"),
+           .fns = ~ factor(., impact_order),
+           .names = "{.col}_f"),
+    across(.cols = starts_with("o_impact"),
+           .fns = ~ case_when(
+             . == "Not at all" ~ 1,
+             . == "Somewhat" ~ 2,
+             . == "Considerably" ~ 3,
+             . == "Extremely" ~ 4,
+             TRUE ~ NA_real_),
+           .names = "{.col}_n")) 
+
+# tabyl(gpra_matched, o_impact_activity_f, tool)
+# tabyl(gpra_matched, o_impact_activity_n, tool)
+
+```
+
+```{r su domain score, include=F}
+
+# create domain score su_domain_score that's the avg numeric score of o_impact_stress_n, o_impact_activity_n, o_impact_emotional_n. set na.rm = TRUE, but anyone with more than 1 NA should have su_domain_score of NA. run t test on pre/post change to su_domain_score
+
+gpra_matched <-
+  gpra_matched %>%
+  rowwise() %>%
+  mutate(su_na_sum = sum(is.na(c(o_impact_stress_n, o_impact_activity_n, o_impact_emotional_n))),
+         su_domain_score = case_when(su_na_sum <= 1 ~ mean(c(o_impact_stress_n, o_impact_activity_n, o_impact_emotional_n), na.rm = T),
+                                     su_na_sum > 1 ~ NA_integer_)) %>%
+  ungroup() %>% 
+  select(-c(su_na_sum))
+
+```
+
+```{r pregnant, include = FALSE}
+
+# tabyl(gpra_matched, pregnant, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(pregnant = case_when(
+    pregnant == "YES" ~ "Yes",
+    pregnant == "NO" ~ "No",
+    pregnant == "Do not know" ~ NA_character_,
+    pregnant == "DON'T KNOW" ~ NA_character_,
+    pregnant == "REFUSED" ~ NA_character_,
+    TRUE ~ pregnant
+  )) 
+
+```
+
+```{r children, include = FALSE}
+
+### FINAL DECISION: only report on n of children under 18 for new tool intakes. drop old tool var for n of children since we just wont report on this
+
+tabyl(gpra_matched, children_yn, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(children_yn = case_when(
+            children_yn == "YES" ~ "Yes",
+            children_yn == "NO" ~ "No",
+            children_yn == "REFUSED" ~ NA_character_,
+            TRUE ~ children_yn)) %>% 
+  #select(-c(children_s2, children_nr_s2)) %>%
+  mutate(children_under18_s3 = case_when(children_under18_s3 == "REFUSED" ~ NA_character_,
+                                         TRUE ~ children_under18_s3) %>% 
+           factor(., levels = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10+")))
+
+tabyl(gpra_matched, children_under18_s3, tool)
+
+```
+
+```{r children custody, include = FALSE}
+
+# tabyl(gpra_matched, children_custody, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(children_custody = case_when(
+            children_custody == "NO" ~ "No",
+            children_custody == "YES. Number of children:" ~ "Yes - How many?",
+            TRUE ~ children_custody),
+         children_custody_nr = as.numeric(children_custody_nr))
+
+```
+
+```{r children reunited, include = FALSE}
+
+# tabyl(gpra_matched, children_reunited_s3, tool) ## Looks good
+
+gpra_matched <- gpra_matched %>% 
+  mutate(children_reunited_nr_s3 = as.numeric(children_reunited_nr_s3))
+
+```
+
+```{r education training program, include = FALSE}
+
+
+# tabyl(gpra_matched, edu_training_program, tool) # looks good
+
+```
+
+```{r education level, include = FALSE}
+
+### FINAL DECISION: recode "COLLEGE OR UNIVERSITY/2ND YEAR COMPLETED/ASSOCIATE'S DEGREE (AA, AS)" in the old tool to "SOME COLLEGE OR UNIVERSITY" in new tool 
+
+## Recode old values of education level to match new values
+### Less than HS
+### HS/GED
+### Some college
+### College
+### Technical/Vocational school (QUESTION: old tool differentiates between "but no diploma" and "diploma" but new tool doesn't)
+### Graduate degree
+### DK
+### Other
+### Refused
+
+gpra_matched <- gpra_matched %>% 
+  mutate(edu_education_level = case_when(
+    str_detect(edu_education_level, "[^2]TH GRADE") ~ "LESS THAN 12TH GRADE",
+    edu_education_level == "3RD GRADE" ~ "LESS THAN 12TH GRADE",
+    edu_education_level == "12TH GRADE/HIGH SCHOOL DIPLOMA/GED" ~ "12TH GRADE/HIGH SCHOOL DIPLOMA/EQUIVALENT",
+    str_detect(edu_education_level, "YEAR COMPLETED") ~ "SOME COLLEGE OR UNIVERSITY",
+    str_detect(edu_education_level, "BACHELOR") ~ "BACHELOR'S DEGREE (FOR EXAMPLE: BA, BS)", 
+    edu_education_level == "VOCATIONAL/TECHNICAL DIPLOMA AFTER HIGH SCHOOL" ~ "VOCATIONAL/TECHNICAL (VOC/TECH) DIPLOMA",
+    edu_education_level == "REFUSED" ~ NA_character_,
+    edu_education_level == "DON'T KNOW" ~ NA_character_,
+    TRUE ~ edu_education_level)) %>% 
+  mutate(edu_education_level = factor(edu_education_level, levels = c("LESS THAN 12TH GRADE",
+                                                                      "12TH GRADE/HIGH SCHOOL DIPLOMA/EQUIVALENT",
+                                                                      "VOCATIONAL/TECHNICAL PROGRAM AFTER HIGH SCHOOL BUT NO VOC/TECH DIPLOMA",
+                                                                      "VOCATIONAL/TECHNICAL (VOC/TECH) DIPLOMA",
+                                                                      "SOME COLLEGE OR UNIVERSITY",
+                                                                      "BACHELOR'S DEGREE (FOR EXAMPLE: BA, BS)",
+                                                                      "GRADUATE WORK/GRADUATE DEGREE",
+                                                                      "OTHER (SPECIFY):"
+  )))
+
+kable(tabyl(gpra_matched, edu_education_level))
+```
+
+```{r employment status, include = FALSE}
+
+### FINAL DECISION: recode "UNEMPLOYED, VOLUNTEER WORK" from old tool into "other" in new tool 
+
+gpra_matched <- gpra_matched %>% 
+  mutate(employ_status = case_when(
+    str_detect(employ_status, "EMPLOYED, FULL TIME") ~ "EMPLOYED, FULL TIME (35+ HOURS/WEEK, OR WOULD BE, IF NOT FOR LEAVE OR AN EXCUSED ABSENCE)",
+    employ_status == "UNEMPLOYED, DISABLED" ~ "NOT WORKING DUE TO A DISABILITY",
+    str_detect(employ_status, "BUT LOOKING FOR WORK") ~ "UNEMPLOYED, BUT LOOKING FOR WORK",
+    str_detect(employ_status, ", LOOKING FOR WORK") ~ "UNEMPLOYED, BUT LOOKING FOR WORK",
+    employ_status == "UNEMPLOYED, NOT LOOKING FOR WORK" ~ "NOT EMPLOYED, NOT LOOKING FOR WORK",
+    employ_status == "UNEMPLOYED, RETIRED" ~ "RETIRED, NOT WORKING",
+    employ_status == "UNEMPLOYED, VOLUNTEER WORK" ~ "OTHER (specify)",
+    employ_status == "OTHER (SPECIFY)" ~ "OTHER (specify)",
+    employ_status == "REFUSED" ~ NA_character_,
+    TRUE ~ employ_status))
+
+# make simplified employ_yn var
+
+gpra_matched <- gpra_matched %>% 
+  mutate(employed_yn = case_when(
+      is.na(employ_status) ~ NA,
+      employ_status == "OTHER (specify)" ~ NA,
+      employ_status == "EMPLOYED, FULL TIME (35+ HOURS/WEEK, OR WOULD BE, IF NOT FOR LEAVE OR AN EXCUSED ABSENCE)" ~ 1,
+      employ_status == "EMPLOYED, PART TIME" ~ 1,
+      TRUE ~ 0
+  ))
+
+# tabyl(gpra_matched, employ_status, tool)
+# tabyl(gpra_matched, employ_status_other_text_s3, tool)
+
+```
+
+```{r income, include = FALSE}
+
+### FINAL DECISION: only report on income for new tool intakes. drop old tool vars income collected in old tool
+
+gpra_matched <- gpra_matched %>% 
+  mutate(income_s3 = na_if(income_s3, "REFUSED") %>%
+           factor(., levels = c("$0 to $9,999",
+                                "$10,000 to $14,999",
+                                "$15,000 to $19,999",
+                                "$20,000 to $34,999",
+                                "$35,000 to $49,999",
+                                "$50,000 to $74,999",
+                                "$75,000 to $99,999",
+                                "$100,000 to $199,999",
+                                "$200,000 or more"))
+  ) %>% 
+  select(-c(starts_with("income_") & contains("_s2")))
+```
+
+```{r enough money, include = FALSE}
+
+### FINAL DECISION: create new variable enough_money_not_at_all which = 
+# 1 if "not at all" in old tool was selected
+# 1 if "not enough money for any of these" in new tool was selected
+# NA if refused in old tool or new tool
+# 0 for all other cases
+
+# "Have you enough money to meet your needs?"
+# tabyl(gpra_matched, enough_money_for_needs_s2, tool) 
+
+# "Do you, individually, have enough money to pay for the following living expenses? Choose all that..."
+# tabyl(gpra_matched, enough_money_refused_s3, tool)
+# gpra_matched %>% filter(tool == "intake new") %>%  select(starts_with("enough_money") & ends_with("_s3")) 
+
+gpra_matched <- gpra_matched %>% mutate(
+  enough_money_not_at_all = case_when(
+    #enough_money_for_needs_s2 == "Not at all" ~ 1,
+    enough_money_none_of_these_s3 == "Not enough money for any of the above" ~ 1,
+    #enough_money_for_needs_s2 == "REFUSED" ~ NA_real_,
+    enough_money_refused_s3 == "REFUSED" ~ NA_real_,
+    TRUE ~ 0
+  )) 
+
+# gpra_matched %>%  select(starts_with("enough_money"))
+
+```
+
+```{r available transport, include = FALSE}
+# 1\. Always\
+# 2\. More than half the time\
+# 3\. Half the time\
+# 4\. Less than half the time\
+# 5\. Never\
+# 6\. REFUSED\
+# 7\. DON'T KNOW
+
+# tabyl(gpra_matched, o_available_transport, tool) ## Reorder
+gpra_matched <- gpra_matched %>% mutate(
+    o_available_transport = na_if(o_available_transport, "REFUSED|DON'T KNOW") %>% 
+      factor(., levels = c("Always", 
+                           "More than half the time", 
+                           "Half the time", 
+                           "Less than half the time", 
+                           "Never" 
+                           )))
+```
+
+```{r received care, include = FALSE}
+
+# starts with received 
+
+# tabyl(gpra_matched, received_med_care_ed_s3)
+# no need to clean these 
+
+received_med_care_vars <- c("received_med_care_pcp_s3", "received_med_care_urgent_care_s3", "received_med_care_ed_s3", "received_med_care_specialist_s3", "received_med_care_other_s3","received_med_care_none_s3")
+
+gpra_matched <- gpra_matched %>% 
+  mutate(received_med_care_any_s3 = case_when(
+    !is.na(received_med_care_pcp_s3) ~ "Received care",
+    !is.na(received_med_care_urgent_care_s3) ~ "Received care",
+    !is.na(received_med_care_ed_s3) ~ "Received care",
+    !is.na(received_med_care_specialist_s3) ~ "Received care",
+    !is.na(received_med_care_other_s3) ~ "Received care",
+    !is.na(received_med_care_none_s3) ~ NA_character_,
+    tool == "intake old" ~ NA_character_
+  ))
+
+```
+
+```{r medical insurance, include = FALSE}
+
+# tabyl(gpra_matched, med_insurance_status_s3)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(med_insurance_status_s3 = na_if(med_insurance_status_s3, "REFUSED"))
+
+```
+
+```{r arrested, include = FALSE}
+
+# tabyl(gpra_matched, legal_arrested, tool) ## Looks good
+
+gpra_matched <- gpra_matched %>% 
+  mutate(legal_arrested_days = as.numeric(legal_arrested_days)) 
+
+gpra_matched <- gpra_matched %>% 
+  mutate(legal_await_trial = case_when(
+    legal_await_trial == "NO" ~ "No",
+    legal_await_trial == "YES" ~ "Yes",
+    legal_await_trial == "REFUSED" ~ NA_character_,
+    legal_await_trial == "DON'T KNOW" ~ NA_character_,
+    TRUE ~ legal_await_trial))
+
+### FINAL DECISION: recode "parole", "probation", and "intensive pretrial sup" in new tool to "yes" 
+
+gpra_matched <- gpra_matched %>% mutate(
+  legal_parole_probation = case_when(
+    legal_parole_probation == "Intensive Pretrail Supervision" ~ "YES",
+    legal_parole_probation == "Intensive Pretrial Supervision" ~ "YES",
+    legal_parole_probation == "Parole" ~ "YES",
+    legal_parole_probation == "Probation" ~ "YES",
+    legal_parole_probation == "No" ~ "NO",
+    legal_parole_probation == "REFUSED" ~ NA_character_,
+    legal_parole_probation == "DON'T KNOW" ~ NA_character_,
+    TRUE ~ legal_parole_probation
+  )
+)
+
+# tabyl(gpra_matched, legal_parole_probation, tool)
+gpra_matched <- gpra_matched %>% 
+  mutate(legal_court_program_s3 = na_if(legal_court_program_s3, "REFUSED"))
+```
+
+```{r relationship status, include=FALSE}
+
+gpra_matched <- gpra_matched %>% mutate(
+  relationship_status_s3 = na_if(relationship_status_s3, "REFUSED"))
+
+```
+
+```{r quality of life, include=FALSE}
+
+### FINAL DECISION: create new variable qol_life_quality_combined (old tool asks for QOL in general; new tool asks for QOL in past 30 days)
+gpra_matched <- gpra_matched %>%
+  mutate(qol_life_quality_combined = qol_life_quality_s3)
+
+quality_order <- c("Very poor", "Poor", "Neither poor nor good", "Good", "Very good", "REFUSED", "DON'T KNOW")
+
+gpra_matched <- gpra_matched %>% 
+  mutate(#qol_life_quality_s2 = factor(qol_life_quality_s2, quality_order),
+         qol_life_quality_s3 = factor(qol_life_quality_s3, quality_order),
+         qol_life_quality_combined = factor(qol_life_quality_combined, quality_order),
+         qol_life_quality_combined_n = case_when(qol_life_quality_combined == "Very poor" ~ 1,
+                                                 qol_life_quality_combined == "Poor" ~ 2,
+                                                 qol_life_quality_combined == "Neither poor nor good" ~ 3,
+                                                 qol_life_quality_combined == "Good" ~ 4,
+                                                 qol_life_quality_combined == "Very good" ~ 5,
+                                                 qol_life_quality_combined == "REFUSED" ~ NA_integer_,
+                                                 qol_life_quality_combined == "DON'T KNOW" ~ NA_integer_))
+
+# tabyl(gpra_matched, qol_life_quality_s2, tool)
+# tabyl(gpra_matched, qol_life_quality_s3, tool)
+# tabyl(gpra_matched, qol_life_quality_combined, tool)
+# tabyl(gpra_matched, qol_life_quality_combined_n, tool)
+
+### Reorder to align with survey
+# 1\. Very dissatisfied\
+# 2\. Dissatisfied\
+# 3\. Neither satisfied nor dis\
+# 4\. Satisfied\
+# 5\. Very satisfied\
+# 6\. REFUSED\
+# 7\. DON'T KNOW
+
+sat_order2 <- c("Very dissatisfied", "Dissatisfied", "Neither satisfied nor dissatisfied", "Satisfied", "Very satisfied", "REFUSED", "DON'T KNOW")
+
+# tabyl(gpra_matched, qol_health_satisfaction, tool) ## Reorder
+gpra_matched <- gpra_matched %>% 
+  mutate(qol_health_satisfaction = factor(qol_health_satisfaction, sat_order2),
+         qol_health_satisfaction_n = case_when(qol_health_satisfaction == "Very dissatisfied" ~ 1,
+                                               qol_health_satisfaction == "Dissatisfied" ~ 2,
+                                               qol_health_satisfaction == "Neither satisfied nor dissatisfied" ~ 3,
+                                               qol_health_satisfaction == "Satisfied" ~ 4,
+                                               qol_health_satisfaction == "Very satisfied" ~ 5,
+                                               qol_health_satisfaction == "REFUSED" ~ NA_integer_,
+                                               qol_health_satisfaction == "DON'T KNOW" ~ NA_integer_))
+# tabyl(gpra_matched, qol_health_satisfaction_n, qol_health_satisfaction)
+
+tabyl(gpra_matched, qol_perform_daily_act_satis, tool) ## Reorder
+gpra_matched <- gpra_matched %>% mutate(
+  qol_perform_daily_act_satis = factor(qol_perform_daily_act_satis, sat_order2),
+  qol_perform_daily_act_satis_n = case_when(qol_perform_daily_act_satis == "Very dissatisfied" ~ 1,
+                                            qol_perform_daily_act_satis == "Dissatisfied" ~ 2,
+                                            qol_perform_daily_act_satis == "Neither satisfied nor dissatisfied" ~ 3,
+                                            qol_perform_daily_act_satis == "Satisfied" ~ 4,
+                                            qol_perform_daily_act_satis == "Very satisfied" ~ 5,
+                                            qol_perform_daily_act_satis == "REFUSED" ~ NA_integer_,
+                                            qol_perform_daily_act_satis == "DON'T KNOW" ~ NA_integer_))
+# tabyl(gpra_matched, qol_perform_daily_act_satis, qol_perform_daily_act_satis_n) ## Reorder
+
+```
+
+```{r mental health, include=FALSE}
+
+### FINAL DECISION: will report on s2 and s3 together even tho questions are slightly different
+
+# tabyl(gpra_matched, mh_days_attempted_suicide, tool)
+# tabyl(gpra_matched, mh_days_serious_depression, tool)
+# tabyl(gpra_matched, mh_days_serious_anxiety, tool)
+# tabyl(gpra_matched, mh_days_trouble_understanding, tool)
+# tabyl(gpra_matched, mh_days_t_violent_behavior, tool)
+# tabyl(gpra_matched, mh_days_prescribed_meds_psych_emot, tool)
+
+##  DON'T KNOW and REFUSED as NA, turn the rest numeric
+gpra_matched <- gpra_matched %>% 
+  mutate(across(
+    .cols = starts_with("mh_days_"), 
+    .fns = ~ case_when(. == "DON'T KNOW" ~ NA_real_,
+                       . == "REFUSED" ~ NA_real_,
+                       is.na(.) ~ NA_real_,
+                       TRUE ~ as.numeric(.)))) 
+
+gpra_matched <- gpra_matched %>% 
+  mutate(mh_days_any = case_when(
+    mh_days_attempted_suicide > 0 ~ 1,
+    mh_days_serious_depression > 0 ~ 1,
+    mh_days_serious_anxiety > 0 ~ 1,
+    mh_days_trouble_understanding > 0 ~ 1,
+    mh_days_t_violent_behavior > 0 ~ 1,
+    mh_days_prescribed_meds_psych_emot > 0 ~ 1,
+    is.na(mh_days_attempted_suicide) ~ NA,
+    is.na(mh_days_serious_depression) ~ NA,
+    is.na(mh_days_serious_anxiety) ~ NA,
+    is.na(mh_days_trouble_understanding) ~ NA,
+    is.na(mh_days_prescribed_meds_psych_emot) ~ NA,
+    TRUE ~ 0
+  ))
+
+# tabyl(gpra_matched, mh_psych_emot_impact, tool) ## "NO REPORTED MENTAL HEALTH COMPLAINTS IN THE PAST 30 DAYS" from s3 and "<NA>" from s2 are the same thing
+
+gpra_matched <- gpra_matched %>% 
+  mutate(mh_psych_emot_impact = case_when(
+    is.na(mh_psych_emot_impact) ~ "NO REPORTED MENTAL HEALTH COMPLAINTS IN THE PAST 30 DAYS",
+    TRUE ~ mh_psych_emot_impact) %>% 
+      factor(., levels = c("Not at all", "Slightly", "Moderately", "Considerably", "Extremely", "NO REPORTED MENTAL HEALTH COMPLAINTS IN THE PAST 30 DAYS", "REFUSED", "DON'T KNOW"))
+  )
+
+gpra_matched <- gpra_matched %>% 
+  mutate(mh_psych_emot_impact_n = case_when(
+   mh_psych_emot_impact == "Not at all" ~ 1,
+   mh_psych_emot_impact == "Slightly" ~ 2,
+   mh_psych_emot_impact == "Moderately" ~ 3,
+   mh_psych_emot_impact == "Considerably" ~ 4,
+   mh_psych_emot_impact == "Extremely" ~ 5,
+   mh_psych_emot_impact == "NO REPORTED MENTAL HEALTH COMPLAINTS IN THE PAST 30 DAYS" ~ NA_integer_,
+   mh_psych_emot_impact == "REFUSED" ~ NA_integer_,
+   mh_psych_emot_impact == "DON'T KNOW" ~ NA_integer_
+  ))
+
+# tabyl(gpra_matched, mh_psych_emot_impact_n) 
+
+```
+
+```{r QOL, include = FALSE}
+
+gpra_matched <- gpra_matched %>% mutate(
+  qol_attend_voluntary = case_when(
+    qol_attend_voluntary == "NO" ~ "No",
+    qol_attend_voluntary == "YES. Number of times:" ~ "Yes",
+    TRUE ~ qol_attend_voluntary
+  )
+)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(qol_attend_vountary_times = as.numeric(qol_attend_vountary_times))
+
+gpra_matched <- gpra_matched %>% mutate(
+  qol_interact_family_friend = case_when(
+    qol_interact_family_friend == "NO" ~ "No",
+    qol_interact_family_friend == "YES" ~ "Yes",
+    TRUE ~ qol_interact_family_friend
+  )
+)
+
+# tabyl(gpra_matched, qol_rel_satisfaction, tool) ## Reorder
+
+gpra_matched <- gpra_matched %>% 
+  mutate(qol_rel_satisfaction = factor(qol_rel_satisfaction, sat_order2),
+         qol_rel_satisfaction_n = case_when(qol_rel_satisfaction == "Very dissatisfied" ~ 1,
+                                            qol_rel_satisfaction == "Dissatisfied" ~ 2,
+                                            qol_rel_satisfaction == "Neither satisfied nor dissatisfied" ~ 3,
+                                            qol_rel_satisfaction == "Satisfied" ~ 4,
+                                            qol_rel_satisfaction == "Very satisfied" ~ 5,
+                                            qol_rel_satisfaction == "REFUSED" ~ NA_integer_,
+                                            qol_rel_satisfaction == "DON'T KNOW" ~ NA_integer_))
+# tabyl(gpra_matched, qol_rel_satisfaction, qol_rel_satisfaction_n) ## Reorder
+
+```
+
+```{r quality of life domain score, include=FALSE}
+
+# create domain score qol_life_sat_domain_score that's the avg numeric score of qol_health_satisfaction, qol_perform_daily_act_satis, o_living_cond_sat_f, qol_rel_satisfaction. 
+# set na.rm = TRUE, but anyone with more than 1 NA should have qol_life_sat_domain_score of NA 
+
+gpra_matched <- 
+  gpra_matched %>% 
+  rowwise() %>%
+  mutate(qol_na_sum = sum(is.na(c(qol_health_satisfaction_n, qol_perform_daily_act_satis_n, o_living_cond_sat_n, qol_rel_satisfaction_n))),
+         qol_life_sat_domain_score = case_when(qol_na_sum <= 1 ~ mean(c(qol_health_satisfaction_n, qol_perform_daily_act_satis_n, o_living_cond_sat_n, qol_rel_satisfaction_n), na.rm = T),
+                                               qol_na_sum > 1 ~ NA_integer_)) %>%
+  ungroup() %>% 
+  select(-c(qol_na_sum))
+
+```
+
+```{r change connections, include = FALSE}
+
+# tabyl(gpra_matched, change_connections_s3, tool) # no cleaning needed
+
+```
+
+```{r barc, include = FALSE}
+
+##  put the BARC option choices in order and turn DK and REFUSED into NA
+# tabyl(gpra_matched, o_barc10_1_n, tool)
+
+# factor and numeric calculated  
+# REFUSED and DON'T KNOW left for now in factor, made NA in numeric
+
+agree_order <- c("Strongly Disagree", "Disagree", "Somewhat Disagree", "Somewhat Agree", "Agree", "Strongly Agree")
+
+gpra_matched <- gpra_matched %>% ## create numeric
+  mutate(across(
+    .cols = starts_with("o_barc10"),
+    .fns = ~ case_when(
+      . == "REFUSED" ~ NA_character_,
+      . == "DON'T KNOW" ~ NA_character_,
+      TRUE ~ .),
+    .names = "{.col}"))
+
+gpra_matched <- gpra_matched %>%  ## create factor
+  mutate(across(
+    .cols = starts_with("o_barc10"),
+    .fns = ~ factor(., agree_order),
+    .names = "{.col}_f"))
+    
+gpra_matched <- gpra_matched %>% ## create numeric
+  mutate(across(
+    .cols = starts_with("o_barc10"),
+    .fns = ~ case_when(
+      . == "Strongly Disagree" ~ 1,
+      . == "Disagree" ~ 2,
+      . == "Somewhat Disagree" ~ 3,
+      . == "Somewhat Agree" ~ 4,
+      . == "Agree" ~ 5,
+      . == "Strongly Agree" ~ 6,
+      TRUE ~ NA_real_),
+    .names = "{.col}_n"))
+  
+```
+
+```{r overdosed, include = FALSE}
+
+### FINAL DECISION: can drop old tool vars OD_ever_yn_s2, OD_ever_nr_s2 (s2 is "in your life", s3 is "in past 30 days")
+
+# gpra_matched <- gpra_matched %>% select(-c(od_ever_yn_s2, od_ever_nr_s2))
+
+gpra_matched <- gpra_matched %>% 
+  mutate(od_p30_s3 = na_if(od_p30_s3, "REFUSED"))
+
+```
+
+```{r substance use disorder treatment, include = FALSE}
+# 8. Not including this current episode, how many times in your life have you been treated at an inpatient or outpatient facility for a substance use disorder? --> reorder option choices
+# tabyl(gpra_matched, su_times_treated_s3, tool)
+gpra_matched <- gpra_matched %>% mutate(
+  su_times_treated_s3 = factor(su_times_treated_s3, levels = c("Never", 
+                                                               "One time", 
+                                                               "Two times",
+                                                               "Three times",
+                                                               "Four times",
+                                                               "Five times",
+                                                               "Six or more times",
+                                                               "REFUSED")))
+
+# 9. Approximately when was the last time you received inpatient or outpatient treatment for a substance use disorder? --> reorder option choices
+# tabyl(gpra_matched, su_last_time_treated_s3)
+gpra_matched <- gpra_matched %>% mutate(
+  su_last_time_treated_s3 = factor(su_last_time_treated_s3, levels = c("Less than 6 months ago", 
+                                                                       "Between 6 months and one year ago", 
+                                                                       "One to two years ago",
+                                                                       "Two to three years ago",
+                                                                       "Three to four years ago",
+                                                                       "Five or more years ago",
+                                                                       "REFUSED")))
+
+```
+
+```{r su times treated, include = FALSE}
+
+#tabyl(gpra_matched, su_times_treated_s2)
+#tabyl(gpra_matched, su_times_treated_s3)
+
+
+# gpra_matched <- gpra_matched %>% 
+#   mutate(su_times_treated_s2 = as.numeric(su_times_treated_s2))
+
+gpra_matched <- gpra_matched %>% 
+  mutate(su_times_treated = case_when(
+    # su_times_treated_s2 == 0 ~ "Never",
+    # su_times_treated_s2 == 1 ~ "One time",
+    # su_times_treated_s2 == 2 ~ "Two times",
+    # su_times_treated_s2 == 3 ~ "Three times",
+    # su_times_treated_s2 == 4 ~ "Four times",
+    # su_times_treated_s2 == 5 ~ "Five times",
+    # su_times_treated_s2 >= 6 ~ "Six or more times",
+    su_times_treated_s3 == "REFUSED" ~ NA_character_,
+    !is.na(su_times_treated_s3) ~ su_times_treated_s3,
+    TRUE ~ NA_character_), 
+  su_times_treated = na_if(su_times_treated, "REFUSED") %>% 
+           factor(., levels = c("Never", 
+                                "One time", 
+                                "Two times",
+                                "Three times",
+                                "Four times",
+                                "Five times",
+                                "Six or more times")))
+
+# tabyl(gpra_matched, su_times_treated)
+
+```
+
+```{r OD interventions, include = FALSE}
+
+### FINAL DECISION: can drop old tool var OD_Naloxone_ever_s2 (s2 = ever, s3 = past 30 days)
+
+# gpra_matched <- gpra_matched %>% select(-c(od_naloxone_ever_s2))
+
+# tabyl(gpra_matched, od_naloxone_p30_s3, tool)
+# tabyl(gpra_matched, od_ed_p30_s3, tool)
+# tabyl(gpra_matched, od_pcp_p30_s3, tool)
+# tabyl(gpra_matched, od_hospital_adm_p30_s3, tool)
+# tabyl(gpra_matched, od_supervision_p30_s3, tool)
+# tabyl(gpra_matched, od_other_p30_s3, tool)
+# tabyl(gpra_matched, od_refused_p30_s3, tool)
+# tabyl(gpra_matched, od_other_p30_text_s3, tool)
+
+```
+
+```{r coach, include = FALSE}
+
+tabyl(gpra_matched, o_coach_spec_mentor, tool)
+gpra_matched <- gpra_matched %>% 
+  mutate(o_coach_spec_mentor = str_to_title(o_coach_spec_mentor),
+         o_coach_spec_mentor = case_when(o_coach_spec_mentor == "Refused" ~ NA_character_,
+                                         TRUE ~ o_coach_spec_mentor),
+         o_coach_spec_mentor_n = case_when(o_coach_spec_mentor == "Yes" ~ 1,
+                                           o_coach_spec_mentor == "No" ~ 0))
+
+# kable(tabyl(gpra_matched, o_connected_coach, tool))
+gpra_matched <- gpra_matched %>% 
+  mutate(o_connected_coach = 
+           case_when(
+             o_connected_coach == "I developed a relationship with a Peer-Recovery Specialist through a support or recovery group" ~ "I developed a relationship with a peer supporter through a support or recovery group",
+             o_connected_coach == "I was connected with a Peer-Recovery Specialist at a hospital or other medical setting" ~ "I was connected with a peer supporter at a hospital or other medical setting",
+             o_connected_coach == "I was connected with a Peer-Recovery Specialist through a jail or prison program" ~ "I was connected with a peer supporter through a jail or prison program",
+             o_connected_coach == "I was connected with a Peer-Recovery Specialist through an AA/NA sponsor" ~ "I was connected with a peer supporter through an AA/NA sponsor",
+             o_connected_coach == "I worked with a Peer-Recovery Specialist as a part of my treatment at the CSB" ~ "I worked with a Peer-Recovery Specialist as a part of my treatment at the CSB/Agency",
+             o_connected_coach == "I worked with a peer supporter as a part of my treatment at the CSB/Agency" ~ "I worked with a Peer-Recovery Specialist as a part of my treatment at the CSB/Agency",
+             TRUE ~ o_connected_coach))
+
+
+# tabyl(gpra_matched, o_coach_helpful_rec, tool) 
+gpra_matched <- gpra_matched %>% mutate(o_coach_helpful_rec = factor(o_coach_helpful_rec, levels = c("Not at all", "Slightly", "Moderately", "Considerably", "Extremely", "REFUSED", "DON'T KNOW")))
+
+```
+
+```{r no coach, include=FALSE}
+
+### FINAL DECISION: probably will recode others - systematic approach pending
+
+# tabyl(gpra_matched, o_if_no_peer_supp_s3, tool) ## Looks good
+
+# tabyl(gpra_matched, o_coach_reason_not_comfortable) ## code it such that any response is 1 and keep NAs as is
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(starts_with("o_coach_reason_") & !contains("text") & !contains("refused")), 
+            ~ if_else(!is.na(.), 1, NA_real_)) 
+
+# fix so that refused are shown as NA
+
+gpra_matched <- gpra_matched %>% 
+  mutate_at(vars(starts_with("o_coach_reason_") & !contains("text") & !contains("refused")), 
+            ~ if_else(!is.na(o_coach_reason_refused), NA_real_, .)) 
+
+```
+
+```{r n crimes, include=FALSE}
+
+gpra_matched <- gpra_matched %>% 
+  mutate(n_crimes = as.numeric(n_crimes))
+
+```
+
+```{r barc total score, include = FALSE}
+
+gpra_matched <- gpra_matched %>% 
+  mutate(o_barc10_total_score = as.numeric(o_barc10_total_score))
+
+```
+
+```{r services travel time, include = FALSE}
+
+# tabyl(gpra_matched, services_travel_time_s3, tool)
+gpra_matched <- gpra_matched %>% 
+  mutate(services_travel_time_s3 = 
+           factor(services_travel_time_s3, levels = c("Half an hour or less",
+                                                      "Between half an hour and one hour",
+                                                      "Between one hour and one and a half hours",
+                                                      "Between one and a half hours and two hours",
+                                                      "Two hours or more",
+                                                      "REFUSED")))
+
+```
+
+```{r planned services explore, include = FALSE}
+
+### FINAL DECISION: don't use this for our reporting/no need to clean
+
+# tabyl(gpra_matched, planned_svc_trt_rec_trt_plan_s2, tool)
+# 
+# tabyl(gpra_matched, planned_svc_trt_trt_plan_s3, tool)
+# tabyl(gpra_matched, planned_svc_trt_rec_plan_s3, tool)
+# 
+# tabyl(gpra_matched, planned_svc_cm_hiv_aids_srv_s2, tool)
+# 
+# tabyl(gpra_matched, planned_svc_cm_hiv_aids_srv_preexp_s3, tool)
+# tabyl(gpra_matched, planned_svc_cm_hiv_aids_srv_postexp_s3, tool)
+# tabyl(gpra_matched, planned_svc_cm_hiv_aids_srv_trt_s3, tool)
+# 
+# 
+# tabyl(gpra_matched, planned_svc_rss_other_s2, tool)
+# 
+# tabyl(gpra_matched, planned_svc_rss_other_rec_sup_s3)
+# tabyl(gpra_matched, planned_svc_rss_other_ptp_rss_s3)
+
+```
+
+```{r p30 drug use, include = FALSE}
+
+# tabyl(gpra_matched, past30_refused_s3, tool)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(past30_refused_s3 = case_when(
+    grepl("REFUSED", past30_refused_s3) ~ "Refused",
+    TRUE ~ NA_character_)
+  )
+
+```
+
+
+```{r non-mood psychotic disorders, include=F}
+
+### FINAL DECISION: create new var dx_non_mood_psychotic_combined = 1 if any of these equal 1:
+# dx_schizophrenia
+# dx_schizotypal
+# dx_delusional
+# dx_brief_psychotic
+# dx_shared_psychotic
+# dx_schizoaffective
+# dx_other_psychotic_s2
+# dx_unspec_psy
+# 
+# or it equals NA if MHDiagnosis_s3 is REFUSED
+# 
+# else it equals 0
+
+gpra_matched <- 
+  gpra_matched %>% mutate(
+  dx_non_mood_psychotic_combined = case_when(
+    rowSums(across(c(dx_schizophrenia, 
+                     dx_schizotypal, 
+                     dx_delusional, 
+                     dx_brief_psychotic, 
+                     dx_shared_psychotic, 
+                     dx_schizoaffective,
+                     #dx_other_psychotic_s2, 
+                     dx_unspec_psy)), na.rm =T) >= 1 ~ 1,
+  mh_diagnosis_s3 == "REFUSED" ~ NA_real_,
+  TRUE ~ 0)) 
+
+# tabyl(gpra_matched, dx_non_mood_psychotic_combined, tool)
+# 
+# gpra_matched %>% select(dx_non_mood_psychotic_combined, mh_diagnosis_s3, dx_schizophrenia, dx_schizotypal, dx_delusional, dx_brief_psychotic, dx_shared_psychotic, dx_schizoaffective, dx_other_psychotic_s2, dx_unspec_psy)
+
+```
+
+```{r mood disorders, include = F}
+
+### FINAL DECISION: create new var dx_mood_combined = 1 if any of these equal 1:
+# dx_manic
+# dx_bipolar
+# dx_major_dep_single
+# dx_major_dep_recurr
+# dx_pers_mood
+# dx_unspec_mood
+
+# or it equals NA if MHDiagnosis_s3 is REFUSED
+
+# else it equals 0
+
+gpra_matched <- 
+  gpra_matched %>% mutate(
+  dx_mood_combined = case_when(
+    rowSums(across(c(dx_manic, 
+                     dx_bipolar, 
+                     dx_major_dep_single,
+                     dx_major_dep_recurr,
+                     dx_pers_mood,
+                     dx_unspec_mood)), na.rm =T) >= 1 ~ 1,
+  mh_diagnosis_s3 == "REFUSED" ~ NA_real_,
+  TRUE ~ 0)) 
+
+# tabyl(gpra_matched, dx_mood_combined, tool)
+
+# gpra_matched %>% select(dx_mood_combined, dx_manic, dx_bipolar, dx_major_dep_single, dx_major_dep_recurr, dx_pers_mood, dx_unspec_mood)
+
+```
+
+```{r Phobic Anxiety and Other Anxiety Disorders, include=F}
+
+### FINAL DECISION: create new var dx_phobic_anx_combined = 1 if any of these equal 1:
+# dx_agora_s3
+# dx_agoraphobia_pd_s3
+# dx_agoraphobia_unspec_s3
+# dx_gad_s3
+# dx_panic_s3
+# dx_phobic_s3
+# dx_social_phobia_s3
+# dx_spec_phobia_s3
+
+# or it equals NA if MHDiagnosis_s3 is REFUSED
+
+# else it equals 0
+
+gpra_matched <- 
+  gpra_matched %>% mutate(
+  dx_phobic_anx_combined = case_when(
+    rowSums(across(c(dx_agora_s3, 
+                     dx_agoraphobia_pd_s3, 
+                     dx_agoraphobia_unspec_s3,
+                     dx_gad_s3,
+                     dx_panic_s3,
+                     dx_phobic_s3,
+                     dx_social_phobia_s3,
+                     dx_spec_phobia_s3)), na.rm =T) >= 1 ~ 1,
+  mh_diagnosis_s3 == "REFUSED" ~ NA_real_,
+  TRUE ~ 0)) 
+
+# tabyl(gpra_matched, dx_phobic_anx_combined, tool)
+
+# gpra_matched %>% select(dx_phobic_anx_combined, dx_agora_s3, dx_agoraphobia_pd_s3, dx_agoraphobia_unspec_s3, dx_gad_s3, dx_panic_s3, dx_phobic_s3, dx_social_phobia_s3, dx_spec_phobia_s3)
+
+```
+
+```{r Obsessive-compulsive disorders, include = F}
+
+### FINAL DECISION: create new var dx_ocd_combined = 1 if any of these equal 1:
+# dx_excoriation_s3
+# dx_hoarding_s3
+# dx_ocd_s3
+# dx_ocd_mixed_s3
+
+# or it equals NA if MHDiagnosis_s3 is REFUSED
+
+# else it equals 0
+
+gpra_matched <- 
+  gpra_matched %>% mutate(
+  dx_ocd_combined = case_when(
+    rowSums(across(c(dx_excoriation_s3, 
+                     dx_hoarding_s3, 
+                     dx_ocd_s3,
+                     dx_ocd_mixed_s3)), na.rm =T) >= 1 ~ 1,
+  mh_diagnosis_s3 == "REFUSED" ~ NA_real_,
+  TRUE ~ 0)) 
+
+# tabyl(gpra_matched, dx_ocd_combined, tool)
+
+# gpra_matched %>% select(dx_ocd_combined, dx_excoriation_s3, dx_hoarding_s3, dx_ocd_s3,dx_ocd_mixed_s3)
+
+```
+
+```{r Reaction to severe stress and adjustment disorders, include=F}
+
+### FINAL DECISION: create new var dx_stress_adj_combined = 1 if any of these equal 1:
+# dx_anxiety_dissoc_stress_somat_s2
+# dx_acute_stress_s3
+# dx_adjustment_s3
+# dx_body_dismorph_s3
+# dx_dissoc_convers_s3
+# dx_dissoc_id_s3
+# dx_ptsd_s3
+# dx_somat_s3
+ 
+# or it equals NA if MHDiagnosis_s3 is REFUSED
+ 
+# else it equals 0
+
+gpra_matched <- 
+  gpra_matched %>% mutate(
+  dx_stress_adj_combined = case_when(
+    rowSums(across(c(#dx_anxiety_dissoc_stress_somat_s2, 
+                     dx_acute_stress_s3, 
+                     dx_adjustment_s3,
+                     dx_body_dismorph_s3,
+                     dx_dissoc_convers_s3,
+                     dx_dissoc_id_s3,
+                     dx_ptsd_s3,
+                     dx_somat_s3)), na.rm =T) >= 1 ~ 1,
+  mh_diagnosis_s3 == "REFUSED" ~ NA_real_,
+  TRUE ~ 0)) 
+
+# tabyl(gpra_matched, dx_stress_adj_combined, tool)
+
+# gpra_matched %>% select(dx_stress_adj_combined, dx_anxiety_dissoc_stress_somat_s2, dx_acute_stress_s3, dx_adjustment_s3, dx_body_dismorph_s3, dx_dissoc_convers_s3, dx_dissoc_id_s3, dx_ptsd_s3, dx_somat_s3)
+
+```
+
+```{r Behavioral syndromes associated with physiological disturbances and physical factors, include=F}
+
+### FINAL DECISION: create new var dx_bh_phys_combined = 1 if any of these equal 1:
+# dx_eating
+# dx_sleep
+
+# or it equals NA if MHDiagnosis_s3 is REFUSED
+ 
+# else it equals 0
+
+gpra_matched <- 
+  gpra_matched %>% mutate(
+  dx_bh_phys_combined = case_when(
+    rowSums(across(c(dx_eating, 
+                     dx_sleep)), na.rm =T) >= 1 ~ 1,
+  mh_diagnosis_s3 == "REFUSED" ~ NA_real_,
+  TRUE ~ 0)) 
+
+# tabyl(gpra_matched, dx_sleep, tool)
+
+# gpra_matched %>% select(dx_bh_phys_combined, dx_eating, dx_sleep)
+
+```
+
+```{r Disorders of adult personality and behavior, include=F}
+
+### FINAL DECISION: create new var dx_adult_pers_combined = 1 if any of these equal 1:
+# dx_antisocial_personality
+# dx_avoidant_s3
+# dx_borderline
+# dx_dependent_s3
+# dx_histronic_s3
+# dx_intellect
+# dx_obsess_comp_person_s3
+# dx_other_spec_pd_s3
+# dx_paranoid_s3
+# dx_personality_unspec_s3
+# dx_develop_id_s3
+# dx_schizoid_pd_s3
+# dx_spec_dev_s2
+
+# or it equals NA if MHDiagnosis_s3 is REFUSED
+
+# else it equals 0
+
+gpra_matched <- 
+  gpra_matched %>% mutate(
+  dx_adult_pers_combined = case_when(
+    rowSums(across(c(dx_antisocial_personality,
+                     dx_avoidant_s3,
+                     dx_borderline,
+                     dx_dependent_s3,
+                     dx_histronic_s3,
+                     dx_intellect,
+                     dx_obsess_comp_person_s3,
+                     dx_other_spec_pd_s3,
+                     dx_paranoid_s3,
+                     dx_personality_unspec_s3,
+                     dx_develop_id_s3,
+                     dx_schizoid_pd_s3 # ,dx_spec_dev_s2
+                     )), na.rm =T) >= 1 ~ 1,
+  mh_diagnosis_s3 == "REFUSED" ~ NA_real_,
+  TRUE ~ 0)) 
+
+# tabyl(gpra_matched, dx_adult_pers_combined, tool)
+
+# gpra_matched %>% select(dx_adult_pers_combined, dx_antisocial_personality, dx_avoidant_s3, dx_borderline, dx_dependent_s3, dx_histronic_s3, dx_intellect, dx_obsess_comp_person_s3, dx_other_spec_pd_s3, dx_paranoid_s3, dx_personality_unspec_s3, dx_develop_id_s3, dx_schizoid_pd_s3, dx_spec_dev_s2)
+
+```
+
+```{r make binaries, include = FALSE}
+# plus enough_money_ vars, received_med_care_ vars
+
+binaries <- c("living_alc_drug_use_s3", "qol_interact_family_friend", "change_connections_s3")
+
+gpra_matched <- gpra_matched %>% 
+  mutate(across(
+    .cols = binaries,
+    .fns = ~ case_when(
+      grepl("No", .) ~ 0,
+      grepl("Yes", .) ~ 1, 
+      . == "REFUSED" ~ NA,
+      is.na(.) ~ NA
+  )))
+
+enough_money_vars <- c("enough_money_food_s3", "enough_money_clothing_s3", "enough_money_transport_s3", "enough_money_rent_s3", "enough_money_utilities_s3", "enough_money_phone_s3", "enough_money_childcare_s3","enough_money_healthins_s3", "enough_money_none_of_these_s3")
+
+# tabyl(gpra_matched, enough_money_none_of_these_s3)
+# tabyl(gpra_matched, enough_money_refused_s3)
+# tabyl(gpra_matched, enough_money_for_needs_s2)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(across(
+    .cols = all_of(enough_money_vars),
+    .fns = ~ case_when(
+      !is.na(.) ~ 1,
+      enough_money_refused_s3 == "REFUSED" ~ NA,
+      TRUE ~ 0
+  )))
+
+# tabyl(gpra_matched, enough_money_none_of_these_s3)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(enough_money_not_at_all = case_when(
+    enough_money_refused_s3 == "REFUSED" ~ NA,
+    #enough_money_for_needs_s2 == "REFUSED" ~ NA,
+    #enough_money_for_needs_s2 == "Not at all" ~ 1, 
+    enough_money_none_of_these_s3 == 1 ~ 1,
+    TRUE ~ 0
+  ))
+
+# tabyl(gpra_matched, enough_money_not_at_all)
+
+received_med_care_vars <- c("received_med_care_pcp_s3", "received_med_care_urgent_care_s3", "received_med_care_ed_s3", "received_med_care_specialist_s3", "received_med_care_other_s3","received_med_care_none_s3", "received_med_care_any_s3")
+
+gpra_matched <- gpra_matched %>% 
+  mutate(across(
+    .cols = all_of(received_med_care_vars),
+    .fns = ~ case_when(
+      !is.na(.) ~ 1,
+      is.na(.) ~ 0
+  )))
+
+```
+
+```{r save data, include = FALSE}
+# check
+dupe_ids <- gpra_matched %>%
+  group_by(client_id) %>%              
+  filter(n() > 1) %>%         
+  summarise(count = n()) %>%    
+  summarise(total_duplicates = sum(count))
+
+saveRDS(gpra_matched, "data/intakes_cleaned_thru_10.15.rds")
+
+#view(dfSummary(gpra_matched))
+
+```

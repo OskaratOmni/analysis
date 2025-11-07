@@ -1,0 +1,1026 @@
+---
+title: Colorado First Judicial Recovery Court Semi-Annual Evaluation
+subtitle:Annual GPRA Report for FY2024-25
+output:
+  omni::word_report:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	include = TRUE,
+  echo = TRUE,
+	 fig.path = "figs/",
+	dpi = 300,
+	message = TRUE,
+	warning = TRUE
+)
+```
+
+```{r}
+if (!dir.exists("analysis/data_clean/figs")) dir.create("analysis/data_clean/figs", recursive = TRUE)
+```
+
+```{r packages, include=FALSE}
+library(tidyverse)
+library(omni)
+library(flextable)
+library(here)
+library(ggplot2)
+library(forcats)
+library(scales)
+```
+
+```{r load-data, include=FALSE}
+here::i_am("data_management/analysis/data_clean/analysis.Rmd")
+
+# Load the cleaned data
+load(here("data_management", "analysis", "data_clean", "cleaned_data.RData"))
+
+# The dataset `data_recoded` is now loaded and ready for analysis
+head(data_recoded)
+```
+
+# Introduction {.unnumbered}
+
+From September 29, 2024 through Month Day, 2025, the First Judicial
+Recovery Court (FJRC) enrolled **XX participants**, exceeding the
+target number of intakes for the grant reporting period. This
+semi-annual evaluation report provides an overview of participant
+characteristics at intake drawn from the Government Performance and
+Results Act (GPRA) Client Outcome Measures for Discretionary Programs
+Client Outcomes Tool.
+
+# Results {.unnumbered}
+
+This section provides a description of the 32 FJRC participants,
+including general demographic information, education, and income. Other
+information summarized includes past 30-day substances used, living
+situation, employment, and health.
+
+## Participant Characteristics {.unnumbered}
+
+### Demographics {.unnumbered}
+
+<!-- #### Age -->
+
+The average participant age was 36 years, ranging from 20 to 54 years of
+age. This reflects a mix of younger and middle-aged adults.
+
+```{r}
+# Descriptive stats for continuous variable (Age)
+data_recoded %>%
+  summarize(
+    mean_age = mean(as.numeric(Age), na.rm = TRUE),
+    median_age = median(as.numeric(Age), na.rm = TRUE),
+    sd_age = sd(as.numeric(Age), na.rm = TRUE),
+    min_age = min(as.numeric(Age), na.rm = TRUE),
+    max_age = max(as.numeric(Age), na.rm = TRUE),
+    count = n()
+  ) %>% 
+  omni_table()
+```
+
+```{r, include=TRUE}
+# Create age ranges and sort
+age_plot_data <- data_recoded %>%
+  mutate(Age = as.numeric(Age)) %>%
+  filter(!is.na(Age)) %>%
+  mutate(
+    age_group = cut(
+      Age,
+      breaks = c(18, 24, 34, 44, 54, Inf),
+      labels = c("18-24", "25-34", "35-44", "45-54", "55+"),
+      right = TRUE
+    )
+  ) %>%
+  count(age_group) %>%
+  arrange(desc(n)) %>%
+  mutate(
+    age_group = fct_reorder(age_group, -n),
+    pct = n / sum(n),
+    pct_formatted = percent(pct, accuracy = 1),
+    highlight_group = case_when(
+      pct == max(pct) ~ "Y",
+      .default = "N"
+    )
+  )
+```
+
+```{r, include=TRUE}
+age_plot_data %>% 
+    ggplot(aes(x = pct, y = fct_rev(age_group), fill = highlight_group)) +
+  geom_col(width = 0.5) +
+  geom_point(
+    shape = 21,
+    size = 12,
+    color = "white"
+  ) +
+  geom_text(
+    aes(label = pct_formatted),
+    color = "white") +
+  scale_color_manual(
+    values = c(
+      "Y" = omni_colors("orange-red-200"),
+      "N" = omni_colors("steel-blue-200")
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Y" = omni_colors("orange-red-400"),
+      "N" = omni_colors("steel-blue-600")
+    )
+  ) +
+  scale_x_continuous(
+    limits = c(0, 0.60),
+    expand = expansion(0, 0)
+  ) +
+  theme_omni(show_grid_lines = FALSE) +
+  theme(axis.text.x = element_blank()) +
+  labs(
+    title = "{.orange-red-400 35-44 Year Olds} Make Up More Than Half of the Sample",
+    caption = "Includes all respondents (n = 59)",
+    x = NULL,
+    y = NULL
+  )
+
+# Save to figs/
+ggsave("figs/age_distribution.png", plot = age_plot, width = 6.5, height = 4.5, dpi = 300)
+```
+
+<!-- #### Gender -->
+
+```{r}
+gender_summary <- data_recoded %>%
+  count(Gender) %>%
+  mutate("%" = round(n / sum(n) * 100, 1))
+
+omni_table(gender_summary)
+```
+
+<!-- #### Children Under 18 -->
+
+```{r}
+children_summary <- data_recoded %>%
+  count(ChildrenUnder18Nr) %>%
+  mutate("%" = round(n / sum(n) * 100, 1))
+
+omni_table(children_summary)
+```
+
+<!-- #### Travel Time to Services -->
+
+```{r}
+travel_summary <- data_recoded %>%
+  count(ServicesTravelTime) %>%
+  mutate(percent = round(n / sum(n) * 100, 1))
+
+omni_table(travel_summary)
+```
+
+<!-- #### Race/Ethnicity -->
+
+```{r}
+race_ethnicity_vars <- c("HispanicLatino", "EthnicCentralAmerican", "EthnicCuban", "EthnicDominican",
+                         "EthnicMexican", "EthnicPuertoRican", "EthnicSouthAmerican", "EthnicOther",
+                         "RaceBlack", "RaceWhite", "RaceAmericanIndian", "RaceAlaskaNative",
+                         "RaceAsianIndian", "RaceChinese", "RaceFilipino", "RaceJapanese",
+                         "RaceKorean", "RaceVietnamese", "RaceOtherAsian", "RaceNativeHawaiian",
+                         "RaceGuamanianChamorro", "RaceSamoan", "RaceOtherPacificIslander", "RaceOther")
+
+data_recoded %>%
+  select(all_of(race_ethnicity_vars)) %>%
+  gather(key = "RaceEthnicity", value = "Response") %>%
+  filter(Response == "Yes") %>%
+  group_by(RaceEthnicity) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / nrow(data_recoded)) * 100, 1)) %>%
+  arrange(desc(count)) %>% 
+  omni_table()
+```
+
+<!-- #### Language Spoken at Home -->
+
+```{r}
+data_recoded %>% count(LangNotEnglishAtHome) %>%
+  mutate(percent = round(n / sum(n) * 100, 1)) %>% 
+omni_table()
+
+data_recoded %>% count(LangNotEnglishSpoken) %>%
+  mutate(percent = round(n / sum(n) * 100, 1)) %>% 
+omni_table()
+```
+
+-   Most participants (19) were male (59%).
+
+-   Participants were asked to identify their race(s) and ethnicity.
+    They could check multiple categories. The majority of participants
+
+    (29) identified their race as white (91%). Over one-third (11)
+         identified their ethnicity as Hispanic/Latino/a or of Spanish
+         origin. Other races/ethnicities noted were Mexican (7) , Black
+         (2), Cuban (1), and Other (1).
+
+-   Participants were asked if they speak a language other than English
+    at home. 9% (3) indicated they did, and all 3 indicated this was
+    Spanish.
+
+-   41% of participants (31) reported having children under 18 years of
+    age.
+
+-   Respondents were asked how long it takes them to travel to the place
+    they receive treatment. In this case, to court. Nearly half of
+    participants (14) reported having to travel at least an hour or more
+    which may present challenges for attendance.
+
+### Participant Substance Use (SU) and Treatment {.unnumbered}
+
+-   Participants were asked which of a list of **substances they used in
+    the past 30 days** and on how many of those days they used the
+    substance(s).
+
+-   78% of participants (25) reported using substances in the past 30
+    days. The most commonly used were Nicotine (n = 16, average of 28
+    days the past month) and Tobacco (n = 11, average use of 26 days in
+    the past month).
+
+-   5 participants noted using fentanyl (n = 2, average of 4 days in the
+    past month) and methamphetamine (n = 3, average of 1 day in the past
+    month).
+
+```{r}
+substance_use_vars <- c("AlcoholDays", "OpioidsHeroinDays", "OpioidsMorphineDays", "OpioidsFentanylDays",
+                        "OpioidsDilaudidDays", "OpioidsDemerolDays", "OpioidsPercocetDays", "OpioidsCodeineDays",
+                        "OpioidsTylenolDays", "OpioidsOxycoDays", "OpioidsNonPresMethadoneDays",
+                        "OpioidsNonPresBupDays", "OpioidsOther1Days", "MarijuanaDays", "SynthCannDays",
+                        "CannOther1Days", "SedativeDays", "HypnoDays", "BarbituratesDays", "AnxioBenzoDays",
+                        "CocaineDays", "CrackDays", "MethamDays", "StimMedsDays", "PCPDays", "MDMADays", "LSDDays",
+                        "MushroomDays", "MescalineDays", "SalviaDays", "DMTDays", "HalluPsychOther1Days",
+                        "InhalantsDays", "NonPrescGhbDays", "KetamineDays", "BathSaltsDays", "KratomDays",
+                        "KhatDays", "TobaccoDays", "NicotineDays")
+
+substance_use_summary <- data_recoded %>%
+  select(all_of(substance_use_vars)) %>%
+  mutate(across(everything(), ~ as.numeric(.))) %>%
+  pivot_longer(cols = everything(), names_to = "Substance", values_to = "DaysUsed") %>%
+  filter(!is.na(DaysUsed) & DaysUsed > 0) %>%
+  group_by(Substance) %>%
+  summarize(
+    n_used = n(),
+    mean_use = round(mean(DaysUsed), 1),
+    min_use = min(DaysUsed),
+    max_use = max(DaysUsed)
+  ) %>%
+  arrange(desc(n_used))
+
+omni_table(substance_use_summary)
+```
+
+<!-- #### Any substance use in the past 30 days -->
+
+```{r}
+# Create indicator for any substance use in past 30 days
+data_recoded <- data_recoded %>%
+  mutate(any_use_30days = if_else(rowSums(select(., ends_with("Days")) > 0, na.rm = TRUE) > 0, 1, 0))
+
+# Summary of past 30-day substance use
+data_recoded %>%
+  count(any_use_30days) %>%
+  mutate(percent = round(n / sum(n) * 100, 1)) %>%
+  omni_table()
+```
+
+<!-- #### Illegal substance use (i.e., cocaine, crack, heroin, fentanyl, methamphetamine) in the past 30 days -->
+
+```{r}
+# Create indicator for illegal use
+illegal_substances <- c("OpioidsHeroinDays", "OpioidsFentanylDays",
+                        "CocaineDays", "CrackDays", "MethamDays")
+
+data_recoded <- data_recoded %>%
+  mutate(illegal_use_30days = if_else(rowSums(select(., all_of(illegal_substances)) > 0, na.rm = TRUE) > 0, 1, 0))
+
+data_recoded %>%
+  count(illegal_use_30days) %>%
+  mutate(percent = round(n / sum(n) * 100, 1)) %>%
+  omni_table()
+```
+
+<!-- #### Most Commonly Used Substances Chart -->
+
+```{r include=TRUE}
+# Define new labels
+new_labels <- c(
+  "Nicotine",
+  "Tobacco",
+  "Methamphetamine",
+  "Fentanyl",
+  "Marijuana",
+  "Alcohol"
+)
+
+# Add new labels to your data
+top_substances <- substance_use_summary %>%
+  slice_max(n_used, n = 6) %>%
+  mutate(Substance = fct_reorder(new_labels, n_used), # order by n_used
+         highlight_group = case_when(
+      n_used == max(n_used) ~ "Y",
+      .default = "N"
+    ))
+
+# sub_use_plot <- ggplot(top_substances, aes(x = reorder(Substance, n_used), y = n_used)) +
+#   geom_col(fill = "#314160", width = 0.6) +
+#   geom_text(
+#     aes(label = n_used),
+#     hjust = 1.75,
+#     color = "white",
+#     size = 4,
+#     fontface = "bold"
+#   ) +
+#   coord_flip() +
+#   labs(
+#     title = "Number of participants reporting any substance use in past 30 days",
+#     x = NULL,
+#     y = NULL
+#   ) +
+#   scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+#   theme_omni() +
+#   theme(
+#     axis.text.x = element_blank(),
+#     axis.ticks.x = element_blank()
+#   )
+
+top_substances %>% 
+  ggplot(aes(x = n_used, y = Substance, fill = highlight_group)) +
+  geom_col(width = 0.5) +
+  geom_point(
+    shape = 21,
+    size = 12,
+    color = "white"
+  ) +
+  geom_text(
+    aes(label = n_used),
+    color = "white") +
+  scale_color_manual(
+    values = c(
+      "Y" = omni_colors("orange-red-200"),
+      "N" = omni_colors("steel-blue-200")
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Y" = omni_colors("orange-red-400"),
+      "N" = omni_colors("steel-blue-600")
+    )
+  ) +
+  scale_x_continuous(
+    limits = c(0, 50),
+    expand = expansion(0, 0)
+  ) +
+  theme_omni(show_grid_lines = FALSE) +
+  theme(axis.text.x = element_blank()) +
+  labs(
+    title = "{.orange-red-400 Nicotine} Was the Most Used Substance in the Past 30 Days",
+    caption = "Includes all respondents (n = 59)",
+    x = NULL,
+    y = NULL
+  )
+
+ggsave("figs/substance_use.png", plot = sub_use_plot, width = 6.5, height = 4.5, dpi = 300)
+```
+
+<!-- #### SUD Diagnoses -->
+
+Participants were asked which of four SU disorders they have been
+diagnosed with, and which if any treatment they received for the
+disorder(s). Only one participant indicated having a SU disorder.
+
+-   Alcohol Use Disorder (0)
+
+-   Opioid Use Disorder (0)
+
+-   Stimulant Use Disorder (1)
+
+-   Tobacco Use Disorder (0)
+
+```{r}
+diagnoses <- c("PreviouslyDiagnosedAUD", "PreviouslyDiagnosedOUD",
+               "PreviouslyDiagnosedStUD", "PreviouslyDiagnosedTUD")
+
+data_recoded %>%
+  summarise(across(all_of(diagnoses), ~ sum(. == "Yes", na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "Diagnosis", values_to = "n") %>%
+  omni_table()
+```
+
+<!-- #### SUD Diagnoses -->
+
+The majority of participants reported having engaged in substance use
+treatment previously, with 69% (22) reporting three or more treatment
+episodes. Nearly a quarter (7) indicated they received treatment six or
+more times.
+
+```{r}
+data_recoded %>%
+  select(TxSUD) %>%
+  gather(key = "Variable", value = "Value") %>%
+  group_by(Variable, Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Variable, desc(count)) %>%
+  omni_table()
+```
+
+<!-- #### Medically Assisted Treatment -->
+
+8 participants received medically-assisted treatment (MAT) including
+medications for any type of substance use disorder in the past 30 days,
+with the most common being Methadone for MOUD.
+
+-   Methadone (MOUD) (5)
+
+-   Buprenorphine (MOUD) (2)
+
+-   Naltextrone (Alcohol Use Disorder) (1)
+
+```{r}
+treatment_vars <- c("AlcMedNaltrexone", "AlcMedExtRelNaltrexone","AlcMedDisulfiram","AlcMedAcamprosate", "OpMedMethadone", "OpMedBuprenorphine", "OpMedNaltrexone",
+    "OpMedExtRelNaltrexone")
+
+mat_summary <- data_recoded %>%
+  select(all_of(treatment_vars)) %>%
+  pivot_longer(cols = everything(), names_to = "Treatment", values_to = "Response") %>%
+  filter(Response == "Yes") %>%
+  group_by(Treatment) %>%
+  summarize(
+    n_yes = n(),
+    percent_yes = round(n() / nrow(data_recoded) * 100, 1)
+  ) %>%
+  arrange(desc(n_yes))
+
+omni_table(mat_summary)
+```
+
+<!-- #### Participant Mental Health Diagnoses and Co-Occurring Disorders -->
+
+Participants were asked a series of questions related to their mental
+health. 21 (66%) said they had been diagnosed with a mental health
+illness by a health care professional. Some shared their diagnosis. The
+most frequently reported were Post Traumatic Stress Disorder (57%) ,
+Generalized Anxiety Disorder (52%), and Recurrent Major Depressive
+Disorder (48%)
+
+```{r}
+# Count of participants who answered "Yes" to MHDiagnosis
+mh_yes_count <- data_recoded %>%
+  filter(MHDiagnosis == "Yes") %>%
+  nrow()
+
+# Print count
+cat("Number of participants with a mental health diagnosis:", mh_yes_count, "\n")
+
+# Filter to only participants who answered "Yes" to MHDiagnosis
+mh_dx_filtered <- data_recoded %>%
+  filter(MHDiagnosis == "Yes")
+
+# Diagnosis-specific variables
+mh_dx_vars <- c("DxBriefPsych", "DxDelusional", "DxSchizoaffective", "DxSchizophrenia",
+                "DxSchizotypal", "DxSharedPsychotic", "DxUnspecPsych", "DxBipolar", 
+                "DxMajorDepRecurr", "DxMajorDepSingle", "DxManicEp", "DxPersistMood", 
+                "DxUnspecMood", "DxAgora", "DxAgoraWithPD", "DxAgoraUnspec", "DxGAD", 
+                "DxPanic", "DxPhobic", "DxSocialPhobia", "DxSpecPhobia", "DxExcoriation", 
+                "DxHoarding", "DxOCD", "DxOCDMixed", "DxAcuteStress", "DxAdjustment", 
+                "DxBodyDysmorph", "DxDissocConvers", "DxDissocID", "DxPTSD", "DxSomat", 
+                "DxEating", "DxSleep", "DxAntisocial", "DxAvoidant", "DxBorderline", 
+                "DxDependent", "DxHistrionic", "DxIntellect", "DxObsessCompulsPers", 
+                "DxOtherSpecPD", "DxParanoid", "DxPersonalityUnspec", "DxDevelopmentalDis", 
+                "DxSchizoidPD", "DxNoneOfTheAbove")
+
+# Summarize the counts and percentages among those with MHDiagnosis == "Yes"
+mh_dx_summary <- mh_dx_filtered %>%
+  select(all_of(mh_dx_vars)) %>%
+  pivot_longer(cols = everything(), names_to = "Diagnosis", values_to = "Response") %>%
+  filter(Response == "Yes") %>%
+  group_by(Diagnosis) %>%
+  summarize(
+    n_yes = n(),
+    percent_yes = round((n_yes / nrow(mh_dx_filtered)) * 100, 1)
+  ) %>%
+  arrange(desc(n_yes))
+
+omni_table(mh_dx_summary)
+```
+
+```{r, include=TRUE}
+# Personality/behavior disorder variables to combine
+personality_vars <- c(
+  "DxAntisocial", "DxBorderline", "DxBriefPsych", "DxDissocID",
+  "DxManicEp", "DxOCD", "DxPersonalityUnspec", "DxSchizoaffective", "DxSchizophrenia"
+)
+
+# Map diagnosis variables to new labels
+dx_label_map <- tibble::tibble(
+  Diagnosis = c(
+    "DxPTSD",
+    "DxGAD",
+    "DxMajorDepRecurr",
+    "DxMajorDepSingle",
+    "DxBipolar",
+    personality_vars
+  ),
+  NewLabel = c(
+    "PTSD",
+    "GAD",
+    "Recurrent Major Depressive Disorder",
+    "Single Episode Depressive Disorder",
+    "Bipolar Disorder",
+    rep("Disorder of Adult Personality and Behavior", length(personality_vars))
+  )
+)
+
+# Filter and recode
+mh_dx_custom_summary <- data_recoded %>%
+  filter(MHDiagnosis == "Yes") %>%
+  select(all_of(dx_label_map$Diagnosis)) %>%
+  pivot_longer(cols = everything(), names_to = "Diagnosis", values_to = "Response") %>%
+  filter(Response == "Yes") %>%
+  left_join(dx_label_map, by = "Diagnosis") %>%
+  group_by(NewLabel) %>%
+  summarize(
+    n = n(),
+    "%" = round((n / nrow(mh_dx_filtered)) * 100, 1),
+    .groups = "drop"
+  ) %>%
+  rename(Diagnosis = NewLabel) %>%   # <-- Renames the column here
+  arrange(desc(n))
+
+# Output table
+omni_table(mh_dx_custom_summary)
+
+```
+
+Participants also shared if they were screened for co-occurring mental
+health and/or substance use disorders and if they screened positive. All
+32 participants were screened by the FJRC for co-occurring disorders and
+20 (63%) screened positive.
+
+<!-- ##### Screened for co-occurring disorders and n screened positive -->
+
+```{r}
+data_recoded %>%
+  summarize(
+    n_screened = sum(CooccurringScreen == "Yes", na.rm = TRUE),
+    n_positive = sum(CooccurringScreenStatus == "Yes", na.rm = TRUE)
+  ) %>%
+  omni_table()
+```
+
+### Living Situation {.unnumbered}
+
+Participants were asked where in the past 30 days they had been living
+most of the time. Most participants were housed at the time of intake
+(78%). 16% lived in an institution (i.e., jail). Among those housed, the
+most common living arrangements included Recovery Residence/Sober Living
+(56%) and someone else's home (24%).
+
+<!-- #### Living Situation at Intake Chart -->
+
+```{r include=TRUE}
+living_plot <- data_recoded %>%
+  filter(LivingWhere != "Refused") %>% 
+  count(LivingWhere) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+
+living_plot_fig <- ggplot(living_plot, aes(x = reorder(LivingWhere, n), y = n)) +
+  geom_col(fill = "#314160", width = 0.6) +
+  geom_text(
+    aes(label = n),
+    hjust = 1.5,
+    color = "white",
+    size = 4,
+    fontface = "bold"
+  ) +
+  coord_flip() +
+  labs(
+    title = "The majority of participants had housing at time of intake ",
+    x = NULL,
+    y = NULL
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_omni() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+ggsave("figs/living_situation.png", plot = living_plot_fig, width = 6.5, height = 4.5, dpi = 300)
+```
+
+<!-- #### Living Where -->
+
+```{r}
+data_recoded %>%
+  select(LivingWhere) %>%
+  gather(key = "Variable", value = "Value") %>%
+  group_by(Variable, Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Variable, desc(count)) %>%
+  omni_table()
+```
+
+<!-- #### Living Housed -->
+
+```{r}
+# Count of participants who answered "Housed" to LivingWhere
+housed_count <- data_recoded %>%
+  filter(LivingWhere == "Housed") %>%
+  nrow()
+
+# Print count
+cat("Number of participants currently housed:", housed_count, "\n")
+
+# Filter to only participants who answered "Yes" to LivingWhere
+housed_filtered <- data_recoded %>%
+  filter(LivingWhere == "Housed")
+
+# Summarize LivingHoused breakdown
+living_housed_summary <- housed_filtered %>%
+  group_by(LivingHoused) %>%
+  summarize(
+    n = n(),
+    percent = round(n / housed_count * 100, 1)
+  ) %>%
+  arrange(desc(n))
+
+omni_table(living_housed_summary)
+```
+
+### Education {.unnumbered}
+
+The GPRA asks participants about level of educational attainment. Over
+half (17) had at least a high school diploma. Of others, 7 had less than
+12th grade and 7 had some college or a degree.
+
+```{r}
+data_recoded %>%
+  select(Education) %>%
+  gather(key = "Variable", value = "Value") %>%
+  group_by(Variable, Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Variable, desc(count)) %>%
+  omni_table()
+```
+
+### Employment {.unnumbered}
+
+Employment remains a challenge, with 69% (22) either not looking for
+work or unemployed and looking for work.
+
+<!-- #### Employment Status -->
+
+```{r}
+data_recoded %>%
+  select(EmployStatus) %>%
+  gather(key = "Variable", value = "Value") %>%
+  group_by(Variable, Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Variable, desc(count)) %>%
+  omni_table()
+```
+
+### Income and Expenses {.unnumbered}
+
+75% of respondents (24) reported their income level as \$0-9,999 per
+year, with the rest making \$10,000 or above.
+
+Additionally, the GPRA asks participants to say which living expenses
+they are able to afford. The chart below shows the items they said they
+were not able to pay for. Many participants struggled with affording
+essentials like utilities (87%), health insurance (83%), and
+rent/housing (82% ).
+
+<!-- #### Income -->
+
+```{r}
+data_recoded %>%
+  select(Income) %>%
+  gather(key = "Variable", value = "Value") %>%
+  group_by(Variable, Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Variable, desc(count)) %>%
+  omni_table()
+```
+
+<!-- #### Expenses -->
+
+```{r}
+income_vars <- c("EnoughMoneyFood", "EnoughMoneyClothing",
+                 "EnoughMoneyTransport", "EnoughMoneyRentHousing", "EnoughMoneyUtilities",
+                 "EnoughMoneyPhone", "EnoughMoneyChildcare", "EnoughMoneyHealthIns")
+
+income_vars_summary <- data_recoded %>%
+  select(all_of(income_vars)) %>%
+  pivot_longer(cols = everything(), names_to = "Domain", values_to = "Response") %>%
+  filter(Response %in% c("Yes", "No")) %>%  # focus only on Yes/No
+  group_by(Domain, Response) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  group_by(Domain) %>%
+  mutate(
+    percent = round(n / sum(n) * 100, 1)
+  ) %>%
+  arrange(Domain, desc(Response))  # show Yes before No if you want
+
+omni_table(income_vars_summary)
+```
+
+<!-- #### Expenses Chart -->
+
+```{r include=TRUE}
+expense_plot <- income_vars_summary %>%
+  filter(Response == "No") %>%
+  mutate(
+    percent = round(percent, 0),
+    Domain = case_when(
+      Domain == "EnoughMoneyChildcare" ~ "Childcare",
+      Domain == "EnoughMoneyClothing" ~ "Clothing",
+      Domain == "EnoughMoneyFood" ~ "Food",
+      Domain == "EnoughMoneyHealthIns" ~ "Health Insurance",
+      Domain == "EnoughMoneyPhone" ~ "Phone",
+      Domain == "EnoughMoneyRentHousing" ~ "Rent or Housing",
+      Domain == "EnoughMoneyTransport" ~ "Transportation",
+      Domain == "EnoughMoneyUtilities" ~ "Utilities",
+      TRUE ~ Domain
+    )
+  )
+
+basic_needs_plot <- ggplot(expense_plot, aes(x = reorder(Domain, percent), y = percent)) +
+  geom_col(fill = "#314160", width = 0.6) +
+  geom_text(
+    aes(label = paste0(percent, "%")),
+    hjust = 1.25,
+    color = "white",
+    size = 4,
+    fontface = "bold"
+  ) +
+  coord_flip() +
+  labs(
+    title = "Many participants struggle to afford basic needs",
+    x = NULL,
+    y = NULL
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_omni() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+ggsave("figs/basic_needs.png", plot = basic_needs_plot, width = 6.5, height = 4.5, dpi = 300)
+```
+
+### Quality of Life and Current Mental Health {.unnumbered}
+
+Participants answered a variety of questions about their physical and
+mental health. While two-thirds (21) rated their overall quality of life
+as "good" or "very good," many also reported experiencing mental health
+symptoms in the past 30 days. Anxiety (66%) and depression (50%) were
+the most frequently reported.
+
+<!-- #### Quality of Life -->
+
+```{r}
+data_recoded %>%
+  select(LifeQuality) %>%
+  gather(key = "Variable", value = "Value") %>%
+  group_by(Variable, Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Variable, desc(count)) %>%
+  omni_table()
+```
+
+<!-- #### Current Mental Health -->
+
+```{r}
+current_mh_vars <- c("Depression", "Anxiety", "Hallucinations", "BrainFunction", 
+                     "ViolentBehavior", "Suicide", "PsycholEmotMedication")
+
+current_mh_summary <- data_recoded %>%
+  select(all_of(current_mh_vars)) %>%
+  mutate(across(everything(), ~ as.numeric(.))) %>%
+  pivot_longer(cols = everything(), names_to = "Symptom", values_to = "DaysExperienced") %>%
+  filter(!is.na(DaysExperienced) & DaysExperienced > 0) %>%
+  group_by(Symptom) %>%
+  summarize(
+    n_reported = n(),
+    mean_days = round(mean(DaysExperienced), 1),
+    min_days = min(DaysExperienced),
+    max_days = max(DaysExperienced)
+  ) %>%
+  arrange(desc(n_reported))
+
+omni_table(current_mh_summary)
+```
+
+```{r, include=TRUE}
+# Rename variables
+current_mh_summary <- current_mh_summary %>%
+  mutate(
+    Symptom = case_when(
+      Symptom == "Depression" ~ "Depression",
+      Symptom == "Anxiety" ~ "Anxiety",
+      Symptom == "Hallucinations" ~ "Hallucinations",
+      Symptom == "BrainFunction" ~ "Brain Function Issues",
+      Symptom == "ViolentBehavior" ~ "Violent Behavior",
+      Symptom == "Suicide" ~ "Suicidal Thoughts",
+      Symptom == "PsycholEmotMedication" ~ "Prescribed med(s) for psych/emotional problem",
+      TRUE ~ Symptom
+    )
+  )
+
+# Plot
+current_mh_plot <- ggplot(current_mh_summary, aes(x = reorder(Symptom, n_reported), y = n_reported)) +
+  geom_col(fill = "#314160", width = 0.6) +
+  geom_text(
+    aes(label = n_reported),
+    hjust = 1.25,
+    color = "white",
+    size = 4,
+    fontface = "bold"
+  ) +
+  coord_flip() +
+  labs(
+    title = "More than half of participants experienced anxiety and or depression \nin the past 30 days",
+    x = NULL,
+    y = NULL
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_omni() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+ggsave("figs/current_mental_health.png", plot = current_mh_plot, width = 6.5, height = 4.5, dpi = 300)
+```
+
+### Social Connectedness and Relationship Satisfaction {.unnumbered}
+
+The final section of the GPRA interview asks various questions about
+social relationships and activities of participants, and their
+satisfaction with personal relationships. Most participants reported
+supportive social interactions and an awareness of the need to change
+connections that may negatively impact recovery.
+
+-   97% (30) reported having interactions with family and/or friends
+    that are supportive of recovery
+
+-   77% (24) realized that they need to change those social connections
+    or places that negatively impact recovery
+
+-   68% (21) reported attending voluntary mutual support groups for
+    recovery
+
+Regarding satisfaction with personal relationships, 75% (24) were
+satisfied or very satisfied with their personal relationships, which can
+be a protective factor in recovery
+
+<!-- #### Relationship Satisfaction -->
+
+```{r}
+data_recoded %>%
+  select(RelationshipSatisfaction) %>%
+  gather(key = "Variable", value = "Value") %>%
+  group_by(Variable, Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Variable, desc(count)) %>%
+  omni_table()
+```
+
+```{r, include=TRUE}
+relationship_summary <- data_recoded %>%
+  select(RelationshipSatisfaction) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
+  filter(!is.na(Value) & Value != "Refused") %>%
+  mutate(Value = factor(Value, levels = c(
+    "Very Satisfied", "Satisfied", "Neither Satisfied nor Dissatisfied", "Dissatisfied"
+  ))) %>%
+  group_by(Value) %>%
+  summarize(count = n()) %>%
+  mutate(percent = round((count / sum(count)) * 100, 1)) %>%
+  arrange(Value)
+
+# Plot
+relationship_plot <- ggplot(relationship_summary, aes(y = fct_rev(Value), x = count)) +
+  geom_col(width = 0.6, fill = "#314160") +             # ← match bar width here
+  geom_text(aes(label = count), hjust = 1.25, 
+            color = "white", size = 3.5, fontface = "bold") +
+  labs(
+    title = "Respondents were largely satisfied with their personal relationships",
+    x = NULL,
+    y = NULL
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+  omni::theme_omni() +
+  theme(
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+
+#Save to figs/
+ggsave("figs/relationships.png", plot = relationship_plot, width = 6.5, height = 4.5, dpi = 300)
+```
+
+<!-- #### Social Support -->
+
+```{r}
+social_support_vars <- c("AttendVoluntary", "InteractFamilyFriends", "ChangeConnectionsPlaces")
+
+social_support_summary <- data_recoded %>%
+  select(all_of(social_support_vars)) %>%
+  pivot_longer(cols = everything(), names_to = "Domain", values_to = "Response") %>%
+  filter(Response %in% c("Yes", "No")) %>%  # focus only on Yes/No
+  group_by(Domain, Response) %>%
+  summarize(n = n(), .groups = "drop") %>%
+  group_by(Domain) %>%
+  mutate(
+    percent = round(n / sum(n) * 100, 1)
+  ) %>%
+  arrange(Domain, desc(Response))  # show Yes before No if you want
+
+omni_table(social_support_summary)
+```
+
+
+# Example Section
+
+## Subtopic A
+
+The project will start with a virtual project alignment meeting with the key county leadership and staff to discuss the overall approach; review the initial workplan to support establishing strong working relationships; and ensure clear communication, detailed schedules, timelines and milestones. 
+
+
+### Sub-Subtopic 1
+
+The project will start with a virtual project alignment meeting with the key county leadership and staff to discuss the overall approach; review the initial workplan to support establishing strong working relationships; and ensure clear communication, detailed schedules, timelines and milestones. 
+
+
+## Example Section
+
+### Subtopic A
+
+The project will start with a virtual project alignment meeting with the key county leadership and staff to discuss the overall approach; review the initial workplan to support establishing strong working relationships; ensure clear communication, detailed schedules, timelines and milestones; and determine how best to foster engagement throughout the project. 
+
+Omni will conduct a thorough review of background materials to ensure that the project is grounded in an understanding of the opioid issues facing Bedford County as well as other related existing community plans to ensure integration. A larger in-person project kickoff meeting that will include key partners will follow, where Omni staff will introduce the project team, present the workplan, and gather input from key partners across the opioid landscape in the County. In-person engagement is an important part of building trust, and this larger kickoff meeting will help establish the groundwork for ongoing collaboration and commitment from all partners.
+
+### Subtopic B
+
+The project will start with a virtual project alignment meeting with the key county leadership and staff to discuss the overall approach; review the initial workplan to support establishing strong working relationships; ensure clear communication, detailed schedules, timelines and milestones; and determine how best to foster engagement throughout the project.
+
+The project will start with a virtual project alignment meeting with the key county leadership and staff to discuss the overall approach; review the initial workplan to support establishing strong working relationships; ensure clear communication, detailed schedules, timelines, and milestones; and determine how best to foster engagement throughout the project.
+
+### Subtopic C
+
+The project will start with a virtual project alignment meeting with the key county leadership and staff to discuss the overall approach to foster engagement throughout the project. 
+
+## Example Section
+
+### Subtopic A
+
+Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicuptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt.
+
+
+### Subtopic B
+
+- Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore.
+    - Lorem ipsum dolor sit amet, consectetu.
+
+- Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+    - Ut enim ad minim veniam, quis nostru.
+    - Nisi ut aliquip ex ea commodo consequat.
+    - Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore. Lorem ipsum dolor sit amet, consectetu.
+
+### Subtopic C
+
+Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt.
+
+INSERT TABLE HERE
+
+## Appendix A
+
+### Subtopic A
+
+Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt.
+
+### Subtopic B
+
+Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt.
+
+### Subtopic C
+
+Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores eos qui ratione voluptatem sequi nesciunt.
+

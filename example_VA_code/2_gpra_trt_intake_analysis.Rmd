@@ -1,0 +1,1649 @@
+---
+title: "GPRA intake analysis - treatment team"
+author: "Hannah Lunkenheimer"
+date: "`r format(Sys.Date(), '%m-%d-%Y')`"
+output: 
+  html_document:
+    toc: TRUE
+    self_contained: TRUE
+    number_sections: FALSE
+    fig_caption: TRUE
+    css: ["css/omni-style.css", "css/omni-page.css", "css/omni-default.css"]
+
+---
+
+## File description
+
+This file is used for GPRA intake analysis "Client Characteristics"
+
+Input: 
+Cleaned intake file containing intakes from old tool and new tool and their matched latest assessments, also cleaned, AND all relevant 'other' variables cleaned/recoded as appropriate.
+
+Latest assessments will be dropped from the cleaned file and analyzed in a separate syntax file. 
+
+Final output:
+Knitted file containing all treatment intake analyses for the SOR 3 Year 6 annual report.  
+ 
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE,
+                      warning = FALSE)
+
+# load packages
+
+library(tidyverse)
+library(tidyselect)
+library(scales)
+library(janitor)
+library(knitr)
+library(omni)
+library(openxlsx)
+
+# set omni defaults
+set_omni_defaults()
+
+# function for freq table of select all
+
+freqc <- function(df, var, respondent_n, table_title = NULL) {
+  
+  summarized_df <- df %>% 
+    count({{ var }}) %>%
+    mutate(pct = n / respondent_n) %>% # want denominator to be fixed as n of respondents
+#    mutate(pct = percent(pct, accuracy = 1)) %>%
+    arrange(-pct) %>% 
+    adorn_totals("row")
+    
+ 
+  kable(summarized_df, caption = table_title)
+  
+}
+
+freq_select_all <- function(df, list_of_vars, respondent_n, table_title = NULL) {
+  
+  temp <- df %>%  
+    select(all_of(list_of_vars)) %>% 
+    mutate(none_selected = if_else(!if_all(everything(), is.na), NA_character_, "none selected")) %>%
+    pivot_longer(cols = everything(), values_to = 'selection')  %>% 
+    filter(!is.na(selection))
+  
+  freqc(temp, selection, respondent_n = respondent_n, table_title = table_title)  
+
+}
+
+freq_select_all_df <- function(df, list_of_vars, respondent_n, table_title = NULL) {
+  
+  # transform the data
+  temp <- df %>%  
+    select(all_of(list_of_vars)) %>% 
+    mutate(none_selected = if_else(!if_all(everything(), is.na), NA_character_, "none selected")) %>%
+    pivot_longer(cols = everything(), values_to = 'selection')  %>% 
+    filter(!is.na(selection))
+  
+  # count the frequencies
+  diagnosis_freq <- temp %>%
+    group_by(selection) %>%
+    summarise(n = n()) %>%
+    ungroup() %>%
+    mutate(pct = n / respondent_n)
+  
+  # create a dataframe
+  diagnosis_freq_df <- as.data.frame(diagnosis_freq)
+
+  # return the dataframe
+  return(diagnosis_freq_df)
+}
+
+```
+
+```{r load data, include=FALSE}
+# 
+# gpra_n <- readRDS("data/Intake_FU_Dis_tsheet_07092024.rds") %>% 
+#   mutate(Discharge_InterviewDate = case_when(
+#     Discharge_InterviewDate >= "2024-10-01" ~ NA,
+#     TRUE ~ Discharge_InterviewDate
+#   )) %>% 
+#   mutate(FU_InterviewDate = case_when(
+#     FU_InterviewDate >= "2024-10-01" ~ NA,
+#     TRUE ~ FU_InterviewDate
+#   ))
+
+gpra_matched <- readRDS("data/intakes_cleaned_thru_10.15_other_corrected.rds")
+  
+intake_all <- gpra_matched %>% 
+  filter(tool != "fu/dis new") # remove latest assessments - df with all intakes
+
+intake_new <- intake_all %>% 
+  filter(tool != "intake old") # create separate df for only new tool intakes to use for some analyses
+
+```
+
+## Overall N's 
+
+### Number of individuals with completed intake GPRA
+
+```{r intake n, include=TRUE}
+
+intake_new %>%
+  nrow() %>%
+  comma()
+
+```
+
+## Matched latest assessment types 
+
+```{r la n, include=TRUE}
+
+kable(tabyl(gpra_matched, interview_type))
+
+# gpra_matched %>%
+#   count(interview_type) %>%
+#   mutate(pct = round(n / sum(n) * 100, 2)) %>%
+#   omni_table()
+  
+```
+
+
+## Demographics
+
+### age 
+
+```{r age, include=TRUE}
+
+intake_new %>%
+  summarize(min_age = min(age_at_intake, na.rm = TRUE),
+         max_age = max(age_at_intake, na.rm = TRUE),
+         mean_age = mean(age_at_intake, na.rm = TRUE)) %>%
+  omni_table(first_col_blue = FALSE)
+
+```
+
+### gender
+
+```{r gender new, echo = FALSE, include=TRUE}
+
+gender_prep <- intake_new %>%
+  select(gender, gender_spec_text_s3, gender_spec_text_s3_recode) %>%
+  mutate(gender = case_when(
+    gender_spec_text_s3 == "bendy straw" ~ NA,
+    TRUE ~ gender
+  )) %>%
+  mutate(gender_spec_text_s3 = case_when(
+    gender_spec_text_s3 == "bendy straw" ~ NA,
+    TRUE ~ gender_spec_text_s3
+  )) %>%
+  mutate(across(everything(), ~ replace_na(.x, "NA"))) %>%
+  count(gender) %>%
+  mutate(pct = round(n / sum(n) * 100, 2))
+
+gender_prep %>%
+  omni_table()
+
+print("note: all 'REFUSED' changed to NA")
+
+intake_new %>% 
+  filter(gender == "Other (Specify)",
+         gender_spec_text_s3 != "bendy straw") %>% 
+  count(gender_spec_text_s3) %>%
+  mutate(pct = round(n / sum(n) * 100, 2)) %>%
+  omni_table()
+```
+
+```{r gender_fig}
+
+gender_fig_prep <- gender_prep %>%
+  mutate(gender_new = case_when(
+    gender == "Male" ~ "Male",
+    TRUE ~ "Female, Transgender, or Non-Binary")) %>%
+  group_by(gender_new) %>%
+  summarize(sum = sum(n)) %>%
+  mutate(pct = round(sum / sum(sum) * 100, 0)) %>%
+  mutate(gender_new = case_when(
+    gender_new == "Male" ~ paste0(pct, "% Male"),
+    gender_new == "Female, Transgender, or Non-Binary" ~ paste0(pct - 1, "% Female, 1% Transgender or Non-Binary")
+  )) 
+
+gender_fig = gender_fig_prep %>%
+  ggplot(aes(x = pct, y = "singlebar", fill = gender_new)) +
+  geom_col(position = "stack", width = 0.25) +
+  geom_text(
+    aes(label = str_wrap(gender_new, width = 25)),
+    position = position_stack(vjust = 0.5),
+    size = 5,
+    color = "white"
+  ) +
+  labs(
+    title = "",
+    x = NULL,
+    y = NULL
+  ) +
+  scale_fill_manual(values = c("#48AEE1", "#074369")) +
+  scale_x_continuous(
+    labels = percent_format()
+  ) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.text.x = element_blank()
+  )
+
+gender_fig
+```
+
+### race 
+
+```{r race, include=TRUE}
+
+intake_all_race <- intake_new %>% 
+  select(race_refused, race_black, race_white, race_alaska_native, race_american_indian, race_asian_combined, race_pac_is_combined, race_spec_other_s3) 
+
+race_types <- intake_all_race %>% 
+  colnames()
+
+for (var in race_types) {
+  intake_all_race <- intake_all_race %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "race_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_all_race, 
+                race_types, 
+                respondent_n = nrow(intake_all_race), 
+                table_title = "Race of respondents")
+ 
+print("note: racial categories not mutually exclusive")
+
+intake_new %>% 
+  filter(race_spec_other_s3 == 1) %>% 
+  tabyl(race_spec_other_text_s3) %>%
+  arrange(-percent) %>% 
+  adorn_totals() %>%
+  kable(caption = "Other race specifications - new intakes")
+
+```
+
+```{r}
+# race horizontal bar prep
+
+respondent_n <- nrow(intake_all_race)
+race_types <- colnames(intake_all_race)
+
+race_bar <- freq_select_all_df(intake_all_race, race_types, respondent_n, table_title = "NULL")
+
+race_bar_grouped_prep <- race_bar %>%
+  mutate(Race = if_else(pct < 0.03, "Other", selection)) %>%
+  group_by(Race) %>%
+  summarise(n = sum(n), pct = sum(pct)) %>%
+  mutate(
+    pct_formatted = percent(pct, accuracy = 1)) %>%
+  ungroup()
+
+race_bar_grouped <- race_bar_grouped_prep %>%
+  mutate(Race = case_when(
+    Race == "white" ~ "White",
+    Race == "black" ~ "Black",
+    TRUE ~ Race
+  )) %>%  
+  mutate(Race = factor(Race, levels = c("White", "Black", "Other"))) %>%
+  ggplot(aes(x = pct, y = fct_rev(Race))) +
+  geom_col(fill = "#074369") +
+  geom_text(
+    aes(label = pct_formatted),
+    hjust = -.5
+  ) +
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  coord_cartesian(clip = "off")
+
+race_bar_grouped
+```
+
+### ethnicity 
+
+```{r ethnicity new, include=TRUE}
+
+intake_new %>% 
+  tabyl(hispanic_latino) %>% 
+  kable(caption = "Ethnicity ") 
+
+print("note: 'REFUSED' changed to NA")
+
+# tabyl(intake_new, hispanic_latino, tool)
+
+intake_all_eth <- intake_new %>% 
+  filter(hispanic_latino == "Yes") %>% 
+  select(starts_with("ethnic_") & !contains("text")) 
+
+eth_types <- intake_all_eth %>% 
+  colnames()
+
+for (var in eth_types) {
+  intake_all_eth <- intake_all_eth %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "ethnic_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_all_eth, eth_types, respondent_n = nrow(intake_all_eth), table_title = "Eth of respondents who are hispanic/latinx ")
+
+print("note: ethnic categories not mutually exclusive, denominator for percents is all who answered 'yes' to hispanic latinx")
+```
+
+```{r hispanic new, echo = FALSE, include=TRUE}
+
+ethnicity_fig_prep <- tibble(
+  ethnicity = c("96% Non-Hisipanic", "4% Hispanic"),
+  count = c(96, 4)
+)
+
+ethnicity_fig = ethnicity_fig_prep %>%
+  ggplot(aes(x = count, y = "singlebar", fill = ethnicity)) +
+  geom_col(position = "stack", width = 0.25) +
+  geom_text(
+    aes(label = ethnicity),
+    position = position_stack(vjust = 0.5),
+    size = 5,
+    color = "white"
+  ) +
+  labs(
+    title = "",
+    x = NULL,
+    y = NULL
+  ) +
+  scale_fill_manual(values = c("#074369", "#48AEE1")) +
+  scale_x_continuous(
+    labels = percent_format()
+  ) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.text.x = element_blank()
+  )
+
+ethnicity_fig
+```
+
+### sexual orientation 
+
+```{r sexual orientation new, include=TRUE}
+
+intake_new %>% 
+  tabyl(sexual_orientation_combined) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Sexual Orientation ") 
+
+print("note: 'REFUSED' changed to NA")
+
+```
+
+### education level 
+
+
+```{r education level, include=TRUE}
+
+intake_new %>% 
+  tabyl(edu_education_level) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Education Level") 
+
+print("note: 'REFUSED' and 'DON'T KNOW' changed to NA")
+
+intake_new %>% 
+  filter(edu_education_level == "OTHER (SPECIFY):") %>% 
+  tabyl(edu_level_other_text_s3) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Education Level - Other specify")
+
+```
+
+### military 
+
+```{r military, include=TRUE}
+
+intake_new %>% 
+  tabyl(military_served) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Military service") 
+
+print("note: 'REFUSED' changed to NA")
+
+```
+
+### access to transportation 
+
+```{r access to transport, include=TRUE}
+
+intake_new %>% 
+  tabyl(o_available_transport) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Access to transportation") 
+
+print("note: 'REFUSED' and 'DON'T KNOW' changed to NA")
+
+```
+
+### employment 
+
+```{r employment, include=TRUE}
+
+intake_new %>% 
+  tabyl(employ_status) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Employment status") 
+
+print("note: 'REFUSED' changed to NA")
+
+intake_new %>% 
+  filter(employ_status == "OTHER (specify)") %>% 
+  tabyl(employ_status_other_text_s3) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Employment status - Other specify")
+
+```
+
+### jail or justice involvement
+
+```{r justice, include=TRUE}
+
+intake_new %>% 
+  mutate(srvc_location_new = case_when(srvc_location != "Jail/Criminal Justice Setting (in person or virtual)" ~ "No justice involvement",
+                                    TRUE ~ srvc_location)) %>%
+  tabyl(srvc_location_new) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Justice involvement (based on service location)") 
+
+```
+
+### pregnant 
+
+
+```{r pregnant, include=TRUE}
+
+intake_new %>% 
+  tabyl(pregnant) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Currently pregnant") 
+
+print("note: 'REFUSED' and 'DON'T KNOW' changed to NA")
+
+```
+
+### children
+
+```{r children new, include=TRUE}
+
+intake_new %>% 
+  filter(children_yn == "Yes") %>% 
+  tabyl(children_under18_s3) %>% 
+  kable(caption = "N children under 18 (if children = yes)") 
+
+print("note: 'REFUSED' changed to NA")
+
+```
+
+### self referral 
+
+```{r self referral, include=TRUE}
+
+intake_new %>% 
+  tabyl(o_referral) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Self referral") 
+
+```
+
+
+### engaged in prior treatment 
+
+```{r prior treatment, include=TRUE}
+
+intake_new %>% 
+  tabyl(su_times_treated) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "N times engaged in prior treatment") 
+
+intake_new %>% 
+  mutate(prior_trt = case_when(
+    su_times_treated == "Never" ~ "No",
+    is.na(su_times_treated) ~ NA_character_,
+    TRUE ~ "Yes")) %>% 
+  tabyl(prior_trt) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Engaged in Prior Treatment Y/N") 
+
+print("note: 'REFUSED' changed to NA")
+
+```
+
+### language spoken at home
+
+```{r home lang, include=TRUE}
+
+# note this is tricky because survey can be given in spanish and eng. 
+# if survey administered in spanish, question asks "do you speak a lang other than spanish at home"
+# if survey administered in eng, question asks "do you speak a lang other than eng at home"
+# 
+# --> modify "do you speak lang other than english at home?" so that all three folks who took survey in spanish are marked as "yes" 
+
+kable(intake_new %>% 
+  tabyl(span_eng_s3) %>% # this question asks if survey was administered in spanish or eng
+  arrange(-percent), caption = "Was survey administered in spanish or eng")
+  
+
+print("note: This question 'was survey administered in spanish or english' was added as a required question after we published the new tool. New tool collection started in late Jan, and this question on whether survey was administered in Spanish or English (and subsequent forking) was not added until late Feb. so any new tool intakes in the first month of collection will have NA for span_eng_s3)")
+
+# if span_eng_s3 == English, then these questions were asked 
+
+# lang_not_english_at_home_s3 = Do you speak a language other than English at home? (y/n/refused)
+
+# kable(intake_new %>%
+#   filter(span_eng_s3 == "English") %>%
+#   tabyl(lang_not_english_at_home_s3), caption = "For surveys admin in English, do you speak a language other than English at home?")
+# 
+kable(intake_new %>%
+  filter(span_eng_s3 == "English") %>%
+  tabyl(lang_not_english_at_home_s3) %>% 
+  arrange(-percent), caption = "For surveys admin in English, do you speak a language other than English at home?")
+
+ # lang_not_english_spoken_s3 = What is this language? - Other (Specify) - Text
+
+# kable(intake_new %>%
+#   filter(is.na(span_eng_s3)) %>% 
+#   filter(lang_not_english_at_home_s3 == "Yes") %>%
+#   tabyl(lang_not_english_spoken_2_text_s3), caption = "For surveys admin in English & other lang at home indicated, what language?")
+
+# if span_eng_s3 == Spanish, then these questions were asked 
+
+# lang_not_english_at_home_s3 = Do you speak a language other than Spanish at home? (y/n/refused)
+
+# kable(intake_new %>% 
+#   filter(span_eng_s3 == "Spanish") %>% 
+#   tabyl(lang_not_spanish_at_home_s3), caption = "For surveys admin in Spanish, do you speak a language other than Spanish at home?")
+
+# lang_not_english_spoken_s3 = What is this language? - Other (Specify) - Text
+
+# kable(intake_new %>% 
+#   filter(lang_not_spanish_at_home_s3 == "Yes") %>% 
+#   tabyl(lang_not_spanish_spoken_2_text_s3), caption = "For surveys admin in Spanish & other lang at home indicated, what language?")
+
+intake_new %>% 
+  tabyl(lang_home) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Language spoken at home")
+
+print("note: for info shown in table above, surveys collected in new tool BEFORE 'was survey administered in spanish or english question' was added are assumed to have been collected in English; 'REFUSED' lang spoken at home question changed to NA")
+
+
+```
+
+### income 
+
+new question
+
+```{r income, include=TRUE}
+
+intake_new %>% 
+  tabyl(income_s3) %>% 
+  kable(caption = "Income")
+
+print("note: 'REFUSED' changed to NA")
+
+```
+
+### relationship status
+
+new question
+
+```{r relationship status, include=TRUE}
+
+intake_new %>% 
+  tabyl(relationship_status_s3) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Relationship status")
+
+print("note: 'REFUSED' changed to NA")
+
+```
+
+### medical insurance status 
+
+new question
+
+```{r insurance, include=TRUE}
+
+intake_new %>% 
+  tabyl(med_insurance_status_s3) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Med Ins Coverage Status")
+
+print("note: 'REFUSED' changed to NA")
+
+intake_new_med_ins <- intake_new %>% 
+  filter(med_insurance_status_s3 == "Yes") %>% 
+  select(vars_select(names(intake_new), contains('med_ins_type'))) %>% 
+  select(-c(med_ins_type_other_text_s3))
+
+med_ins_types <- intake_new_med_ins %>% 
+  colnames()
+
+for (var in med_ins_types) {
+  intake_new_med_ins <- intake_new_med_ins %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "med_ins_type_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_med_ins, med_ins_types, respondent_n = nrow(intake_new_med_ins), table_title = "Types of Med Insurance for those with coverage")
+
+print("note: coverage types not mutually exclusive; denominator for percents is all who indicated they had some type of coverage (Med Ins Coverage Status = Yes)")
+
+```
+
+## Substance Use History and Behavioral Health Diagnoses
+
+### Substance use disorders
+
+```{r new su dx, include=TRUE}
+
+intake_new_su_dx <- intake_new %>% 
+  select(c(med_opioid_no_oud, med_alc_no_aud, int_stim_no_stim_ud_s3, med_tob_no_tud_s3)) %>% 
+  rename(no_oud = med_opioid_no_oud,
+         no_aud = med_alc_no_aud,
+         no_stim_ud_s3 = int_stim_no_stim_ud_s3,
+         no_tud_s3 = med_tob_no_tud_s3)
+
+su_dx_types <- intake_new_su_dx %>% 
+  colnames()
+
+for (var in su_dx_types) {
+  intake_new_su_dx <- intake_new_su_dx %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 0 ~ str_remove(var, "no_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_su_dx, su_dx_types, respondent_n = nrow(intake_new_su_dx), table_title = "SUD freqs")
+
+```
+
+```{r}
+# substance use disorder frequency bar
+# horizontal bar with color coding
+
+respondent_n <- nrow(intake_new_su_dx)
+su_dx_types <- colnames(intake_new_su_dx)
+
+d_sud_hbar <- freq_select_all_df(intake_new_su_dx, su_dx_types, respondent_n, table_title = "SUD freqs")
+
+d_sud_hbar <- d_sud_hbar %>%
+  mutate(pct_formatted = percent(pct, accuracy = 1),
+         selection = recode(selection,
+                            "tud_s3" = "Tobacco Use Disorder",
+                            "stim_ud_s3" = "Stimulant Use Disorder",
+                            "oud" = "Opioid Use Disorder",
+                            "none selected" = "No Disorder Specified",
+                            "aud" = "Alcohol Use Disorder")) %>%
+  arrange(-pct) %>%
+  mutate(color_fig = c("dark blue", "medium blue", "gray", "gray", "gray"))
+
+sud_hbar <- d_sud_hbar %>%
+  mutate(selection = fct_reorder(selection, pct)) %>%
+  ggplot(aes(x = pct, y = selection, fill = color_fig)) +
+  geom_col() +
+  geom_text(
+    aes(label = pct_formatted,
+        color = case_when(
+          color_fig == "dark blue" ~ "white",
+          color_fig =="medium blue" ~ "white",
+          color_fig == "gray" ~ "black")),
+    hjust = 1.5
+  ) +
+  scale_fill_manual(values = c("dark blue" = "#074369", 
+                              "medium blue" = "#48AEE1",
+                              "gray" = omni_colors("Gray", variations_sub = 2))) +
+  scale_color_identity() +  
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+sud_hbar
+```
+
+```{r}
+# substance use disorder frequency bar - justice vs non justice
+# horizontal bar with color coding
+
+d_jx_sud_bar <- intake_new %>%
+  select(c(med_opioid_no_oud, med_alc_no_aud, int_stim_no_stim_ud_s3, med_tob_no_tud_s3, justice_any)) %>% 
+  rename(no_oud = med_opioid_no_oud,
+         no_aud = med_alc_no_aud,
+         no_stim_ud_s3 = int_stim_no_stim_ud_s3,
+         no_tud_s3 = med_tob_no_tud_s3) %>%
+  mutate(no_sud = if_else(no_oud == 0 & no_aud == 0 & no_stim_ud_s3 == 0 & no_tud_s3 == 0, 1, 0)) %>%
+  group_by(justice_any) %>%
+  summarize(
+    respondent_n = n(),  # Calculate total respondents within each group
+    `Opioid Use Disorder` = sum(no_oud == 1),
+    `Alcohol Use Disorder` = sum(no_aud == 1),
+    `Stimulant Use Disorder` = sum(no_stim_ud_s3 == 1),
+    `Tobacco Use Disorder` = sum(no_tud_s3 == 1),
+    `No disorder selected` = sum(no_sud == 1)
+  ) %>%
+  pivot_longer(cols = -c(justice_any, respondent_n), names_to = "sud", values_to = "count") %>%
+  mutate(pct = count/respondent_n,  # Calculate percentage within each group
+         pct_formatted = percent(pct, accuracy = 1))
+
+jx_sud_bar <- d_jx_sud_bar %>%
+  mutate(sud = fct_reorder(sud, pct)) %>%
+  ggplot(aes(x = pct, y = sud, fill = justice_any)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(
+    aes(group = justice_any,
+        label = pct_formatted),
+    position = position_dodge(width = 0.9),  
+    hjust = 1.5, 
+    color = "white"
+  ) +
+  labs(fill = "") +
+  scale_fill_manual(values = c("Yes" = "#074369", "No" = "#48AEE1"),
+                    labels = c("Yes" = "Justice Setting", "No" = "General Population")) + 
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(legend.position = "right")
+
+jx_sud_bar
+```
+
+#### Multiple SUD
+
+```{r new su dx multiple, include=TRUE}
+
+intake_new_su_dx_mult <- intake_new %>% 
+  select(c(med_opioid_no_oud, med_alc_no_aud, int_stim_no_stim_ud_s3, med_tob_no_tud_s3)) %>% 
+  rename(no_oud = med_opioid_no_oud,
+         no_aud = med_alc_no_aud,
+         no_stim_ud_s3 = int_stim_no_stim_ud_s3,
+         no_tud_s3 = med_tob_no_tud_s3) %>% 
+  mutate(tally_no_sud = no_oud + no_aud + no_stim_ud_s3 + no_tud_s3) %>% 
+  mutate(tally_sud = case_match(tally_no_sud,
+                                4 ~ 0,
+                                3 ~ 1, 
+                                2 ~ 2,
+                                1 ~ 3,
+                                0 ~ 4)) %>% 
+  mutate(multiple_sud = case_when(
+    tally_sud > 1 ~ "Multiple SUD",
+    tally_sud <= 1 ~ "One or fewer SUD"
+  ))
+
+freqc(intake_new_su_dx_mult, tally_sud, respondent_n = nrow(intake_new_su_dx_mult), table_title = "Number of SUDs reported")
+
+freqc(intake_new_su_dx_mult, multiple_sud, respondent_n = nrow(intake_new_su_dx_mult), table_title = "Multiple SUD freq")
+
+```
+
+#### Multiple SU including tobacco
+
+```{r, include=FALSE}
+table(intake_new$p30_any_sub_comb_s3) 
+table(intake_new$p30_any_sub_ex_tob_comb_s3) 
+table(intake_new$p30_any_sub_ex_tob_alc_mj_comb_s3) 
+table(intake_new$p30_any_opioid_and_stim_comb_s3) 
+
+n_intake <- intake_new %>%
+  nrow()
+
+n_multi_subs <- intake_new %>%
+  filter(p30_any_sub_comb_s3 == 1) %>%
+  nrow()
+
+n_multi_subs_exc_tob <- intake_new %>%
+  filter(p30_any_sub_ex_tob_comb_s3 == 1) %>%
+  nrow()
+
+n_multi_subs_exc_tob_alc_mj <- intake_new %>%
+  filter(p30_any_sub_ex_tob_alc_mj_comb_s3 == 1) %>%
+  nrow()
+
+n_multi_subs_opi_stim <- intake_new %>%
+  filter(p30_any_opioid_and_stim_comb_s3 == 1) %>%
+  nrow()
+
+multi_sub_bar_prep <- tibble(
+  category = c(
+    "Multiple Substances",
+    "Multiple Substances (Excluding Tobacco)",
+    "Multiple Substances (Excluding Tobacco, Alcohol, and Marijuana)",
+    "Opioid and Stimulant Use"
+  ),
+  count = c(
+    n_multi_subs,
+    n_multi_subs_exc_tob,
+    n_multi_subs_exc_tob_alc_mj,
+    n_multi_subs_opi_stim
+  ),
+    pct = round(c(
+    n_multi_subs / n_intake * 100,
+    n_multi_subs_exc_tob / n_intake * 100,
+    n_multi_subs_exc_tob_alc_mj / n_intake * 100,
+    n_multi_subs_opi_stim / n_intake * 100
+  ), 0) 
+)  
+```
+
+```{r multi_sub_bar, include=TRUE}
+
+multi_sub_bar <- multi_sub_bar_prep %>%
+  ggplot(aes(x = category, y = pct)) +
+  geom_col() +
+  geom_text(
+    aes(label = paste0(pct, "%")),
+    vjust = -0.5
+  ) +
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    y = NULL,
+    x = NULL
+  ) +
+  scale_x_discrete(labels = scales::label_wrap(10)) + 
+  theme(
+    axis.text.y = element_blank(),  
+    axis.ticks.y = element_blank()  
+  )
+
+multi_sub_bar
+```
+
+### Behavioral health diagnoses
+
+
+
+```{r new bh dx, include=TRUE}
+
+intake_new_bh_dx <- intake_new %>% 
+  select(c(dx_non_mood_psychotic_combined, dx_mood_combined, dx_phobic_anx_combined, dx_ocd_combined,
+           dx_stress_adj_combined, dx_bh_phys_combined, dx_adult_pers_combined))
+
+bh_all_dx_types <- intake_new_bh_dx %>% 
+  colnames()
+
+for (var in bh_all_dx_types) {
+  intake_new_bh_dx <- intake_new_bh_dx %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ var,
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_bh_dx, bh_all_dx_types, respondent_n = nrow(intake_new_bh_dx), table_title = "BH dx freq in NEW intakes")
+
+print("Note: see bottom of table here for details on specific disorders in each category https://omniinstitute.atlassian.net/wiki/spaces/VASTX/pages/537889316/Cleaning+questions")
+
+```
+
+```{r}
+
+respondent_n <- nrow(intake_new_bh_dx)
+bh_all_dx_types <- colnames(intake_new_bh_dx)
+
+d_rmimd_hbar <- freq_select_all_df(intake_new_bh_dx, bh_all_dx_types, respondent_n, table_title = "BH dx freq in NEW intakes")
+
+d_rmimd_hbar <- d_rmimd_hbar %>%
+  mutate(pct_formatted = percent(pct, accuracy = 1),
+         selection = recode(selection,
+                            "dx_mood_combined" = "Mood [affective] disorders",
+                            "none selected" = "No mental health illness selected",
+                            "dx_non_mood_psychotic_combined" = "Schizophrenia, schizotypal, delusional, and other non-mood psycholotic disorders",
+                            "dx_adult_pers_combined" = "Disorders of adult personality and behavior",
+                            "dx_bh_phys_combined" = "Behavioral syndromes associated with psychological disturbances and physical factors")) %>%
+  arrange(-pct) %>%
+  mutate(color = c("dark blue", "medium blue", "gray", "gray", "gray", "gray", "gray", "gray"))
+
+rmimd_hbar <- d_rmimd_hbar %>%
+  mutate(selection = fct_reorder(selection, pct)) %>%
+  ggplot(aes(x = pct, y = selection, fill = color)) +
+  geom_col() +
+  geom_text(
+    aes(label = pct_formatted,
+        color = "black"),
+    hjust = -.5
+  ) +
+  scale_fill_manual(values = c("dark blue" = "#074369", 
+                              "medium blue" = "#48AEE1",
+                              "gray" = omni_colors("Gray", variations_sub = 2))) +
+  scale_color_identity() +  
+ theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  scale_y_discrete(labels = function(x) stringr::str_wrap(x, width = 30)) +
+  coord_cartesian(clip = "off")
+
+rmimd_hbar
+```
+
+```{r}
+intake_new_bh_dx_jx <- intake_new %>% 
+  select(c(dx_non_mood_psychotic_combined, dx_mood_combined, dx_bh_phys_combined, dx_adult_pers_combined, justice_any))
+
+jx_mh_bar_prep <- intake_new_bh_dx_jx %>%
+  mutate(across(c(dx_non_mood_psychotic_combined, 
+                  dx_adult_pers_combined, 
+                  dx_mood_combined, 
+                  dx_bh_phys_combined), 
+                ~ replace_na(., 0))) %>%
+  mutate(no_bh = if_else(dx_non_mood_psychotic_combined == 0 & 
+                         dx_adult_pers_combined == 0 & 
+                         dx_mood_combined == 0 & 
+                         dx_bh_phys_combined == 0, 1, 0)) %>%
+  group_by(justice_any) %>%
+  summarize(
+    respondent_n = n(),
+    `Schizophrenia, schizotypal, delusional, and other non-mood psycholotic disorders` = sum(dx_non_mood_psychotic_combined == 1),
+    `Disorders of adult personality and behavior` = sum(dx_adult_pers_combined == 1),
+    `Mood [affective] disorders` = sum(dx_mood_combined == 1),
+    `No disorder selected` = sum(no_bh == 1),
+    `Behavioral syndromes associated with psychological disturbances and physical factors` = sum(dx_bh_phys_combined == 1)
+  ) %>%
+  pivot_longer(cols = -c(justice_any, respondent_n), names_to = "mhd", values_to = "count") %>%
+  mutate(pct = count/respondent_n,
+         pct_formatted = percent(pct, accuracy = 1))
+
+jx_mh_bar <- jx_mh_bar_prep %>%
+  mutate(mhd = fct_reorder(mhd, pct)) %>%
+  ggplot(aes(x = pct, y = mhd, fill = justice_any)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_text(
+    aes(group = justice_any,
+        label = str_wrap(pct_formatted, width = 20)),
+    position = position_dodge(width = 0.9),  
+    hjust = -.5, 
+    color = "black"
+  ) +
+  labs(fill = "") +
+  scale_fill_manual(values = c("Yes" = "#074369", "No" = "#48AEE1"),
+                    labels = c("Yes" = "Justice Setting", "No" = "General Population")) + 
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())+
+  scale_y_discrete(labels = function(x) stringr::str_wrap(x, width = 20)) +
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "right")
+
+jx_mh_bar
+```
+
+```{r new mood dx breakdown, include=TRUE}
+
+intake_new_mood_dx <- intake_new %>% 
+  select(c(dx_manic, dx_bipolar, dx_major_dep_single, dx_major_dep_recurr, dx_pers_mood, dx_unspec_mood))
+
+bh_mood_dx_types <- intake_new_mood_dx %>% 
+  colnames()
+
+for (var in bh_mood_dx_types) {
+  intake_new_mood_dx <- intake_new_mood_dx %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ var,
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_mood_dx, bh_mood_dx_types, respondent_n = nrow(intake_new_mood_dx), table_title = "Mood dx freq in NEW intakes")
+
+```
+
+### Number of individuals justice involved in any way
+
+Justice involved in any way is defined as one or more of the following:
+(a) receiving trt in justice setting,
+(b) awaiting charges/trial/sentencing, 
+(c) on parole or probation, 
+(d) participating in a drug court or deferred pros agreement
+
+```{r any justice, include=TRUE}
+
+intake_new %>% 
+  tabyl(justice_any) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Any Justice Involvement - New intakes")
+
+```
+
+### Number of individuals awaiting charges/trial/sentencing 
+
+```{r awaiating trial new, include=TRUE}
+
+intake_new %>% 
+  tabyl(legal_await_trial) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "N Individuals Awaiting Trial - New intakes")
+
+print("note: 'REFUSED' and 'DON'T KNOW' changed to NA")
+
+```
+
+### Number of individuals on parole or probation
+
+```{r parole probation new, include=TRUE}
+
+intake_new %>% 
+  tabyl(legal_parole_probation) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "N Individuals On Parole/Probation - New intakes")
+
+print("note: 'REFUSED' and 'DON'T KNOW' changed to NA")
+
+```
+
+### Number of individuals currently participating in a drug court program or a deferred prosecution agreement 
+
+```{r drug court program, include=TRUE}
+
+intake_new %>% 
+  tabyl(legal_court_program_s3) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "N Individuals In Drug Court Program")
+
+print("note: 'REFUSED' changed to NA")
+
+```
+
+### Number of individuals receiving treatment in justice setting
+
+```{r justice setting new, include=TRUE}
+
+intake_new %>% 
+  mutate(srvc_location_new = case_when(srvc_location != "Jail/Criminal Justice Setting (in person or virtual)" ~ "No justice involvement",
+                                    TRUE ~ srvc_location)) %>%
+  tabyl(srvc_location_new) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "N individuals receiving treatment in justice setting") 
+
+```
+
+### Breakdown of services planned in justice setting (e.g., peer recovery, relapse prevention, etc)
+
+```{r justice settings new, include=TRUE}
+
+intake_new %>% 
+  filter(srvc_location == "Jail/Criminal Justice Setting (in person or virtual)") %>% 
+  tabyl(justice_setting) %>% 
+  arrange(-percent) %>% 
+  adorn_totals("row") %>% 
+  kable(caption = "Justice setting for justice clients")
+
+intake_new %>% 
+  filter(srvc_location == "Jail/Criminal Justice Setting (in person or virtual)",
+         justice_setting == "Other, please specify:") %>%
+  tabyl(justice_setting_5_text) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Justice setting for justice client - Other Specify")
+
+```
+
+
+```{r justice services new, include=TRUE}
+
+intake_justice_services_new <- intake_new %>% 
+  filter(srvc_location == "Jail/Criminal Justice Setting (in person or virtual)") %>% 
+  select(c(starts_with("planned_svc") & !contains("text")) & contains("s3"))
+
+justice_svc_types_new <- intake_justice_services_new %>% 
+  colnames()
+
+# tabyl(intake_justice_services_new, planned_svc_modality_rec_supp)
+
+for (var in justice_svc_types_new) {
+  intake_justice_services_new <- intake_justice_services_new %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "planned_svc_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_justice_services_new, justice_svc_types_new, respondent_n = nrow(intake_justice_services_new), table_title = "Planned services for justice setting clients - new intakes, services in new tool")
+
+```
+
+### Most common SU diagnoses for those in justice setting 
+
+#### Substance use disorders in justice setting 
+
+```{r new su dx justice, include=TRUE}
+
+intake_new_su_dx_j <- intake_new %>% 
+  filter(srvc_location == "Jail/Criminal Justice Setting (in person or virtual)") %>%
+  select(c(med_opioid_no_oud, med_alc_no_aud, int_stim_no_stim_ud_s3, med_tob_no_tud_s3)) %>% 
+  rename(no_oud = med_opioid_no_oud,
+         no_aud = med_alc_no_aud,
+         no_stim_ud_s3 = int_stim_no_stim_ud_s3,
+         no_tud_s3 = med_tob_no_tud_s3)
+
+for (var in su_dx_types) {
+  intake_new_su_dx_j <- intake_new_su_dx_j %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 0 ~ str_remove(var, "no_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_su_dx_j, su_dx_types, respondent_n = nrow(intake_new_su_dx_j), table_title = "SUD freqs - justice setting")
+
+```
+
+
+#### Behavioral health diagnoses in justice setting 
+
+```{r new bh dx justice, include=TRUE}
+
+intake_new_bh_dx_j <- intake_new %>% 
+  filter(srvc_location == "Jail/Criminal Justice Setting (in person or virtual)") %>%
+  select(c(dx_non_mood_psychotic_combined, dx_mood_combined, dx_phobic_anx_combined, dx_ocd_combined,
+           dx_stress_adj_combined, dx_bh_phys_combined, dx_adult_pers_combined))
+
+for (var in bh_all_dx_types) {
+  intake_new_bh_dx_j <- intake_new_bh_dx_j %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ var,
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_bh_dx_j, bh_all_dx_types, respondent_n = nrow(intake_new_bh_dx_j), table_title = "BH dx freq in NEW intakes - justice setting")
+
+print("Note: see bottom of table here for details on specific disorders in each category https://omniinstitute.atlassian.net/wiki/spaces/VASTX/pages/537889316/Cleaning+questions")
+
+```
+
+```{r new mood dx breakdown justice, include=TRUE}
+
+intake_new_mood_dx_j <- intake_new %>% 
+  filter(srvc_location == "Jail/Criminal Justice Setting (in person or virtual)") %>%
+  select(c(dx_manic, dx_bipolar, dx_major_dep_single, dx_major_dep_recurr, dx_pers_mood, dx_unspec_mood))
+
+
+for (var in bh_mood_dx_types) {
+  intake_new_mood_dx_j <- intake_new_mood_dx_j %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ var,
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_mood_dx_j, bh_mood_dx_types, respondent_n = nrow(intake_new_mood_dx_j), table_title = "Mood dx freq in NEW intakes")
+
+```
+
+### Percentage with co-occurring SUD and mental heath
+
+```{r cooccurring SUD and MH new, include=TRUE}
+
+intake_new %>% 
+  tabyl(cooccur_screen) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Individuals screened for co-occurring disorders - new intakes")
+
+intake_new %>% 
+  filter(cooccur_screen == "Yes") %>% 
+  tabyl(cooccur_screen_status) %>% 
+  arrange(-percent) %>% 
+  adorn_totals("row") %>% 
+  kable(caption = "Individuals screened for co-occurring disorders who screened positive - new intakes")
+
+intake_new %>% 
+  filter(cooccur_screen == "Yes", cooccur_screen_status == "Yes") %>% 
+  tabyl(cooccuring_referral_s3) %>% 
+  arrange(-percent) %>% 
+  adorn_totals("row") %>% 
+  kable(caption = "Individuals screening positive for co-occurring disorders who were referred for further assessment")
+
+```
+
+```{r, echo = FALSE, include=TRUE}
+# co-occurring mental health and sud donut
+
+d_cooccurring <- tribble(
+  ~cooccurring,
+  ~pct,
+  "yes",
+  0.75,
+  "no",
+  0.25
+) |>
+  
+  # Create a new column 'pct_formatted' which is the 'pct' column expressed as a percentage to 1 decimal place
+  mutate(pct_formatted = percent(pct, accuracy = 1)) |>
+  
+  # Create a new column 'text_label' which will contain the value of 'pct_formatted' if 'gender' is 'female', and will be NA otherwise
+  mutate(text_label = case_when(
+    cooccurring == "yes" ~ pct_formatted,
+    .default = NA
+  )) 
+
+cooccurring_fig <- d_cooccurring %>%
+  # Start building a ggplot. In initial aesthetic mapping, assign a single position on x-axis (1) across all categories and use 'pct' for the y-axis. 'fill' is used to differentiate bars by gender
+  ggplot(aes(
+    x = 1,
+    y = pct,
+    fill = cooccurring
+  )) +
+  
+  # Add a bar to the plot for each row of data ('gender' category). The height will correspond to the 'pct' and color will correspond to 'gender'
+  geom_col() +
+  
+  # Add text to the plot at specified position with 'text_label' as the label
+  geom_text(
+    aes(
+      x = -.75,
+      y = 0,
+      label = text_label
+    ),
+    vjust = 0,
+    size = 12
+  ) +
+  
+  # Add another text label "Identified as female" at specified position
+  geom_text(
+    aes(
+      x = .75,
+      y = 0,
+      label = str_wrap("of those who were screened had co-occurring mental health and substance use disorders.", width = 20)
+    ),
+    vjust = 2,
+    size = 4
+  ) +
+  
+  # Convert the plot to polar coordinates for a 'pie chart' feel. 'theta = "y"' keeps the pie chart fixed rather than it rotating about the centre
+  coord_polar(theta = "y") +
+  
+  # Assign custom colors to the 'female' and 'non-female' categories
+  scale_fill_manual(values = c(
+    "yes" = "#074369",
+    "no" = omni_colors("Gray", variations_sub = 1)
+  )) +
+  
+  # Set the x-axis limits
+  scale_x_continuous(limits = c(-1.5, 1.5)) +
+  
+  # Remove all text from axis as it is not relevant for a pie chart
+  theme(
+    axis.text = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  )
+
+cooccurring_fig
+```
+
+
+### Breakdown of services planned x OUD (e.g., peer recovery, relapse prevention, etc)
+
+```{r oud services all, include=TRUE}
+
+# tabyl(intake_all$med_opioid_no_oud)
+
+intake_oud_services <- intake_new %>% 
+  filter(med_opioid_no_oud == 0) %>% 
+  select(c(starts_with("planned_svc") & !contains("text")) & !contains("s2"))
+
+oud_svc_types <- intake_oud_services %>% 
+  colnames()
+
+# tabyl(intake_oud_services, planned_svc_modality_rec_supp)
+
+for (var in oud_svc_types) {
+  intake_oud_services <- intake_oud_services %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "planned_svc_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_oud_services, oud_svc_types, respondent_n = nrow(intake_oud_services), table_title = "Planned services for OUD clients - new tool intakes, services in new tool")
+
+```
+
+### Breakdown of services planned x StUD (e.g., peer recovery, relapse prevention, etc)
+
+```{r StUD services all, include=TRUE}
+
+# tabyl(intake_all$int_stim_no_stim_ud_s3)
+
+intake_stud_services <- intake_new %>% 
+  filter(int_stim_no_stim_ud_s3 == 0) %>% 
+  select(c(starts_with("planned_svc") & !contains("text")) & !contains("s2"))
+
+stud_svc_types <- intake_stud_services %>% 
+  colnames()
+
+# tabyl(intake_stud_services, planned_svc_modality_rec_supp)
+
+for (var in stud_svc_types) {
+  intake_stud_services <- intake_stud_services %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "planned_svc_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_stud_services, stud_svc_types, respondent_n = nrow(intake_stud_services), table_title = "Planned services for StUD clients - new tool intakes, services in new tool")
+
+```
+
+### Evidence-based interventions, OUD 
+
+```{r oud ebi new, include=TRUE}
+
+# tabyl(intake_new$med_opioid_no_oud)
+
+intake_oud_int <- intake_new %>% 
+  filter(med_opioid_no_oud == 0) %>% 
+  select(c(med_opioid_methadone, med_opioid_buprenorphine, med_opioid_naltrexone, med_opioid_ex_naltrexone, med_opioid_none))
+
+oud_int_types <- intake_oud_int %>% 
+  colnames()
+
+# tabyl(intake_oud_services, planned_svc_modality_rec_supp)
+
+for (var in oud_int_types) {
+  intake_oud_int <- intake_oud_int %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "med_opioid_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_oud_int, oud_int_types, respondent_n = nrow(intake_oud_int), table_title = "Interventions for OUD clients - all intakes, for those who indicated OUD")
+
+print("note: 'total' should be ignored here; people may have reported more than one intervention so percents may sum to > 100. Denominator for percents is all folks who reported having the indicated disorder.")
+
+```
+
+### Evidence-based interventions, StUD 
+
+```{r stud ebi all, include=TRUE}
+
+
+intake_stud_int <- intake_new %>% 
+  filter(int_stim_no_stim_ud_s3 == 0) %>% 
+  select(c(int_stim_cont_mgmt_s3, int_stim_comm_ref_s3, int_stim_cbt_s3, int_stim_other_ebi_s3, int_stim_none_s3))
+
+stud_int_types <- intake_stud_int %>% 
+  colnames()
+
+# tabyl(intake_oud_services, planned_svc_modality_rec_supp)
+
+for (var in stud_int_types) {
+  intake_stud_int <- intake_stud_int %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "int_stim_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_stud_int, stud_int_types, respondent_n = nrow(intake_stud_int), table_title = "Interventions for StUD clients - new tool intakes, for those who indicated StUD")
+
+print("note: 'total' should be ignored here; people may have reported more than one intervention so percents may sum to > 100. Denominator for percents is all folks who reported having the indicated disorder.")
+
+```
+
+### Past 30 day SU
+
+```{r p30 su new tool, include=TRUE}
+
+intake_new_substances <- intake_new %>% 
+  filter(is.na(past30_refused_s3)) %>% 
+  select(c(starts_with("p30_") & ends_with("_s3") & !contains("text") & !contains("days") & !contains("comb") & !contains("route")))
+
+intake_new_substances_list <- intake_new_substances %>% 
+  colnames()
+
+# tabyl(intake_new_substances, p30_inhalants_s3)
+
+for (var in intake_new_substances_list) {
+  intake_new_substances <- intake_new_substances %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "p30_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_substances, intake_new_substances_list, respondent_n = nrow(intake_new_substances), table_title = "Substances used in past 30 days, for those who DID NOT refuse")
+
+
+```
+
+```{r, echo=FALSE, include=TRUE}
+respondent_n <- nrow(intake_new_substances)
+substances <- colnames(intake_new_substances)
+
+p30_drugs <- freq_select_all_df(intake_new_substances, substances, respondent_n, table_title = "NULL")
+
+p30_drugs_grouped_prep <- p30_drugs %>%
+  mutate(
+    drug = case_when(
+      selection %in% c("alcohol_other_s3", "alcohol_s3") ~ "Alcohol",
+      selection %in% c("cocaine_s3", "cocain_other_s3", "crack_s3", "metham_s3", 
+                       "mdma_s3", "bath_salts_s3", "stim_meds_s3", "stim_other_s3") ~ "Stimulants",
+      selection %in% c("nicotine_s3") ~ "Nicotine",
+      selection %in% c("tobacco_other_s3", "tobacco_s3") ~ "Tobacco",
+      selection %in% c("marijuana_s3", "cann_other_s3", "synth_cann_s3") ~ "Cannabis",
+      selection %in% c("opioids_codeine_s3", "opioids_demerol_s3", "opioids_dilaudid_s3",
+                       "opioids_fentanyl_s3", "opioids_heroin_s3", "opioids_morphine_s3",
+                       "opioids_non_pres_bup_s3", "opioids_non_pres_methadone_s3",
+                       "opioids_other_s3", "opioids_oxycodone_rx_s3", "opioids_percocet_s3",
+                       "opioids_tylenol_s3") ~ "Opioids",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  group_by(drug) %>%
+  summarise(n = sum(n), pct = sum(pct)) %>%
+  mutate(
+    pct_formatted = percent(pct, accuracy = 1)) %>%
+  ungroup()
+
+p30_drugs_grouped <- p30_drugs_grouped_prep %>%
+  filter(drug != "Other") %>%
+  ggplot(aes(x = pct, y = fct_reorder(drug, pct), fill = drug)) +
+  geom_col() +
+  geom_text(
+    aes(label = pct_formatted),
+    hjust = -.5
+  ) +
+  scale_fill_manual(values = c("Tobacco" = omni_colors("Gray", variations_sub = 2),  
+                               "Cannabis" = omni_colors("Gray", variations_sub = 2),
+                               "Stimulants" = omni_colors("Gray", variations_sub = 2),
+                               "Alcohol" = omni_colors("Gray", variations_sub = 2),
+                               "Nicotine" = omni_colors("Gray", variations_sub = 2),
+                               "Opioids" = "#074369")) +
+  labs(title = "Substances used in the past 30 days") +
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  coord_cartesian(clip = "off") 
+
+p30_drugs_grouped
+```
+
+
+```{r p30 su comb new tool, include=TRUE}
+
+intake_new_substances_comb <- intake_new %>% 
+  filter(is.na(past30_refused_s3)) %>% 
+  select(c(starts_with("p30_") & ends_with("_s3") & !contains("text") & !contains("days") & contains("comb") & !contains("route")))
+
+intake_new_substances_comb_list <- intake_new_substances_comb %>% 
+  colnames()
+
+# tabyl(intake_new_substances, p30_inhalants_s3)
+
+for (var in intake_new_substances_comb_list) {
+  intake_new_substances_comb <- intake_new_substances_comb %>%
+    mutate(!!var := case_when(
+      .data[[var]] == 1 ~ str_remove(var, "p30_"),
+      TRUE ~ NA_character_
+    ))
+}
+
+freq_select_all(intake_new_substances_comb, intake_new_substances_comb_list, respondent_n = nrow(intake_new_substances_comb), table_title = "Substances used in past 30 days (combined into categories), for those who DID NOT refuse p30 su")
+
+print("note: 'none selected' cannot be interpreted here/should be ignored")
+
+```
+
+```{r p30 iv drug new tool, include=TRUE}
+
+intake_new %>% 
+  filter(is.na(past30_refused_s3)) %>% 
+  tabyl(p30_any_iv_route_comb) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Any injection drug use (IV or non-IV) in p30, for those who DID NOT refuse p30 su")
+
+```
+
+### Overdoses
+
+```{r overdoses p30, include=TRUE}
+
+intake_new %>% 
+  tabyl(od_p30_s3) %>% 
+  arrange(-percent) %>% 
+  kable(caption = "Overdoses in the last 30 days")
+
+```
+
+```{r p30_overdoses}
+overdoses_prep <- intake_new %>%
+  tabyl(od_p30_s3) %>%
+  filter(!is.na(od_p30_s3)) %>%
+  mutate(pct_formatted = percent(valid_percent, accuracy = 1)) %>%
+  mutate(text_label = case_when(
+    od_p30_s3 == "No" ~ pct_formatted,
+    .default = NA
+  )) 
+
+overdoses_donut = overdoses_prep %>%
+  ggplot(aes(x = 1, y = percent, fill = od_p30_s3)) +
+  geom_col() +
+  geom_text(
+    aes(
+      x = -1.5,
+      y = 0,
+      label = text_label
+    ),
+    vjust = 0,
+    size = 12
+  ) +  
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = c(
+    "No" = omni_colors("Dark Blue"),
+    "Yes" = omni_colors("Gray", variations_sub = 1))) +
+  scale_x_continuous(limits = c(-1.5, 1.5)) +
+  theme(
+    axis.text = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  )
+
+overdoses_donut
+``` 
+
+
+```{r od interventions, include=TRUE}
+
+intake_new_od_intrvns <- intake_new %>% 
+  filter(od_p30_s3 == "Yes") %>% 
+  select(od_naloxone_p30_s3,
+         od_ed_p30_s3,
+         od_pcp_p30_s3,
+         od_hospital_adm_p30_s3,
+         od_supervision_p30_s3,
+         od_other_p30_s3)
+
+od_intrvns <- intake_new_od_intrvns %>% 
+  colnames()
+
+freq_select_all(intake_new_od_intrvns, od_intrvns, respondent_n = nrow(intake_new_od_intrvns), table_title = "Intervention Types for Overdoses in the Past 30 Days")
+
+print("note: intervention types not mutually exclusive")
+
+```
+
+```{r od interventions other}
+intake_new %>% 
+  filter(od_p30_s3 == "Yes", od_other_p30_s3 == "Other") %>% 
+  tabyl(od_other_p30_text_s3) %>% 
+  arrange(-percent) %>% 
+  adorn_totals("row") %>% 
+  kable(caption = "Overdoses in the last 30 days revived with something else")
+
+```
+
+```{r, echo = FALSE}
+# generating workbook for figs
+
+# specify file path where we want workbook saved
+figs_path <- "../../../General/SOR Reports/Year 6 Annual Report/Treatment Drafts/figs"
+
+workbook_filename <- file.path(figs_path, "gpra_intake_tx_figures_workbook.xlsx")
+
+dataframes <- list(`Gender` = gender_fig_prep,
+                   `Race` = race_bar_grouped_prep,
+                   `Ethnicity` = ethnicity_fig_prep,
+                   `Substance use` = d_sud_hbar,
+                   `Justice substance use` = d_jx_sud_bar,
+                   `Multiple substance use` = multi_sub_bar_prep,
+                   `Mental illness` = d_rmimd_hbar,
+                   `Justice mental illness` = jx_mh_bar_prep,
+                   `Co-occurring disorders` = d_cooccurring,
+                   `Substances past 30 days` = p30_drugs_grouped_prep,
+                   `Overdoses past 30 days` = overdoses_prep)
+
+figs <- list(`Gender fig` = gender_fig,
+             `Race fig` = race_bar_grouped,
+             `Ethnicity fig` = ethnicity_fig,
+             `Substance use fig` = sud_hbar,
+             `Justice substance use fig` = jx_sud_bar,
+             `Multiple substance use fig` = multi_sub_bar,
+             `Mental illness fig` = rmimd_hbar,
+             `Justice mental illness fig` = jx_mh_bar,
+             `Co-occurring disorders fig` = cooccurring_fig,
+             `Substances past 30 days fig` = p30_drugs_grouped,
+             `Overdoses past 30 days fig` = overdoses_donut)
+
+# Create a new workbook
+wb <- createWorkbook()
+
+# Loop through the dataframes and plots
+for (i in seq_along(dataframes)) {
+  df_name <- names(dataframes)[i]
+  df <- dataframes[[i]]
+  plot <- figs[[i]]
+  
+  # Add a new sheet for the dataframe and plot
+  addWorksheet(wb, df_name)
+  
+  # Write the dataframe to the sheet
+  writeData(wb, df_name, df, startCol = 1, startRow = 1)
+  
+  # Save the plot as an image
+  plot_filename <- file.path(figs_path, paste0(df_name, "_fig.png"))
+  ggsave(plot_filename, plot = plot, width = 6, height = 4)
+  
+  # Insert the plot image into the sheet
+  insertImage(wb, sheet = df_name, file = plot_filename, startCol = 8, startRow = 1, width = 6, height = 4)
+  
+  # Clean up the image file
+  #file.remove(plot_filename)
+}
+
+# Save the workbook
+saveWorkbook(wb, workbook_filename, overwrite = TRUE)
+```
+
+

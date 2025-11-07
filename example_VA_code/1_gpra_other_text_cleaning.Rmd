@@ -1,0 +1,536 @@
+---
+title: "GPRA intake cleaning - other text"
+author: "Hannah Lunkenheimer"
+date: "`r format(Sys.Date(), '%m-%d-%Y')`"
+output: 
+  html_document:
+    toc: TRUE
+    self_contained: TRUE
+    number_sections: FALSE
+    fig_caption: TRUE
+    css: ["css/omni-style.css", "css/omni-page.css", "css/omni-default.css"]
+
+---
+
+## File description
+
+This file is used to clean 'other' variables in Year 6 annual report GPRA data (SOR 3 Year 2). The analysis period is 10/1/2022 - 9/30/2024 (SOR 3 Year 1 and Year 2). 
+
+From 1/20/2023 onward, the Year 5 GPRA tool was used to intake clients ('new tool'/'s3'). 
+
+Input: 
+Cleaned intake file containing intakes from old tool and new tool and their matched latest assessments, also cleaned. Note: file does NOT yet have 'other' variables recoded yet. It is the output of Rmd 0 in this R project. 
+
+Intermediary output: 
+Excel file with 1 sheet/table of values for each 'other' variable that needs to be cleaned. 
+
+Manual step done outside of R:
+Review excel file and denote recode values in each of the tables. 
+
+Final output:
+Cleaned intake file containing intakes from old tool and new tool and their matched latest assessments, also cleaned, AND all relevant 'other' variables cleaned/recoded as appropriate.
+
+Note: this Rmd should not be knit but rather "run all" 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+# load packages
+
+library(tidyverse)
+library(janitor)
+library(openxlsx)
+library(knitr)
+library(readxl)
+
+```
+
+Load data
+
+```{r load data, include=FALSE}
+
+other_vars <- read.xlsx("data/other_variables_list.xlsx") %>% # pull in sheet with info on which other vars we want to recode - other 'other' vars are not relevant and we don't report on them so can skip :) 
+  clean_names() %>% 
+  filter(need_to_recode_y_n == "Y") %>% 
+  select(other_column) %>% 
+  unique() %>% 
+  unlist() %>% 
+  unname()
+
+gpra_matched <- readRDS("data/intakes_cleaned_thru_10.15.rds")
+
+gpra_other <- gpra_matched %>%
+  select(all_of(other_vars)) %>%
+  rename_with(~ other_vars, .cols = everything())
+ 
+wb = createWorkbook() 
+# wb2 = createWorkbook() 
+
+```
+
+```{r create tables, include=FALSE}
+
+for (i in 1:length(other_vars)) {
+
+  var_name_i = other_vars[i]
+
+  table <- gpra_other %>%
+    mutate(across(everything(), tolower)) %>%
+    select(all_of(var_name_i))  %>%
+    filter(!is.na(!!ensym(var_name_i))) %>%
+    rename(text = var_name_i) %>%
+    distinct() %>%
+    mutate(recode = NA,
+           flag_for_review = NA,
+           notes = NA)
+
+
+  addWorksheet(wb, sheetName = var_name_i)
+  writeDataTable(wb, sheet = var_name_i, x = table)
+
+}
+
+```
+
+```{r save workbook, include=FALSE}
+
+# saveWorkbook(wb, "data/other_vars_to_recode_10.24.xlsx", overwrite = FALSE)
+
+```
+
+```{r bring in workbook after recoding done, include=FALSE}
+
+excel_file <- "data/other_vars_to_recode_10.24.xlsx"
+
+# Get the names of all sheets in the Excel file
+sheet_names <- excel_sheets(excel_file)
+
+# Read each sheet and assign it to a data frame with the sheet name
+for (sheet_name in sheet_names) {
+  data_frame_name <- make.names(sheet_name)  # Ensure the sheet name is a valid variable name
+  assign(data_frame_name, read_excel(excel_file, sheet = sheet_name))
+}
+
+```
+
+```{r append new values, include=FALSE}
+
+# for (i in 1:length(other_vars)) {
+# 
+#   var_name_i = other_vars[i]
+#   df_name = get(other_vars[i])
+# 
+#   table <- gpra_other %>%
+#     mutate(across(everything(), tolower)) %>%
+#     select(all_of(var_name_i)) %>%
+#     filter(!is.na(!!ensym(var_name_i))) %>%
+#     rename(text = var_name_i) %>%
+#     distinct()  %>%
+#     mutate(recode = NA,
+#            flag_for_review = NA,
+#            notes = NA)
+# 
+#   table2 <- rbind(table, df_name) %>%
+#     distinct() %>%
+#     group_by(text) %>%
+#     mutate(temp = (sum(is.na(recode)) == n())) %>%
+#     ungroup() %>%
+#     filter(!(temp == FALSE & is.na(recode))) %>%
+#     select(-c(temp))
+# 
+#   addWorksheet(wb2, sheetName = var_name_i)
+#   writeDataTable(wb2, sheet = var_name_i, x = table2)
+# 
+# }
+
+```
+
+```{r resave workbook, include=FALSE}
+
+# saveWorkbook(wb2, "data/other_vars_to_recode_10.25.xlsx", overwrite = TRUE)
+
+```
+
+Do recoding
+
+```{r add recodes, include=FALSE}
+
+# add in recodes as new variables
+
+for (i in 1:length(other_vars)) {
+  
+  other_df_name = get(other_vars[i])
+  var_name_i = other_vars[i]
+  recode_var_name_i = paste0(var_name_i, "_recode")
+  
+  other_df_name <- other_df_name %>% 
+    select(text, recode) %>%
+    rename(!!var_name_i := text,
+           !!recode_var_name_i := recode)
+  
+  gpra_matched <- gpra_matched %>%
+    mutate(across(!!var_name_i, tolower))
+
+  gpra_matched <- left_join(gpra_matched, other_df_name, by = var_name_i)
+  
+}
+
+
+
+
+```
+
+```{r coalesce single multiple choice ones, include=FALSE}
+
+
+# living_housed_other_text
+
+gpra_matched  <- gpra_matched %>% 
+  mutate(living_housed = coalesce(living_housed_other_text_recode, living_housed),
+         living_housed = ifelse(living_housed == "NA", NA, living_housed))
+
+# employ_status_other_text_s3
+
+gpra_matched <- gpra_matched %>% 
+  mutate(employ_status = coalesce(employ_status_other_text_s3_recode, employ_status),
+         employ_status = ifelse(employ_status == "NA", NA, employ_status))
+
+# edu_level_other_text_s3
+
+gpra_matched <- gpra_matched %>% 
+  mutate(edu_education_level = coalesce(edu_level_other_text_s3_recode, edu_education_level),
+         edu_education_level = ifelse(edu_education_level == "NA", NA, edu_education_level))
+
+# o_referral_7_text
+
+gpra_matched <- gpra_matched %>% 
+  mutate(o_referral = coalesce(o_referral_7_text_recode, o_referral),
+         o_referral = ifelse(o_referral == "NA", NA, o_referral))
+
+# srvc_location_3_text
+
+gpra_matched <- gpra_matched %>% 
+  mutate(srvc_location = coalesce(srvc_location_3_text_recode, srvc_location),
+         srvc_location = ifelse(srvc_location == "none", NA, srvc_location))
+
+# o_connected_coach_6_text
+
+gpra_matched <- gpra_matched %>% 
+  mutate(o_connected_coach = coalesce(o_connected_coach_6_text_recode, o_connected_coach),
+         o_connected_coach = ifelse(o_connected_coach == "none", NA, o_connected_coach)) %>% 
+  mutate(o_connected_coach_6_text = case_when(
+    o_connected_coach != "Other (Please specify)" ~ NA_character_,
+    TRUE ~ o_connected_coach_6_text
+  ))
+
+# o_coach_mandatory_4_text
+
+gpra_matched <- gpra_matched %>% 
+  mutate(o_coach_mandatory = coalesce(o_coach_mandatory_4_text_recode, o_coach_mandatory),
+         o_coach_mandatory = ifelse(o_coach_mandatory == "NA", NA, o_coach_mandatory)) %>% 
+  mutate(o_coach_mandatory_4_text = case_when(
+    o_coach_mandatory != "Mandatory, other (specify)" ~ NA_character_,
+    TRUE ~ o_coach_mandatory_4_text
+  ))
+
+# gender_spec_text_s3
+
+gpra_matched <- gpra_matched %>% 
+  mutate(gender = coalesce(gender_spec_text_s3_recode, gender),
+         gender = ifelse(gender == "NA", NA, gender))
+
+```
+
+```{r deal with select all ones, include=FALSE}
+
+# ethnic_other_text_s3
+
+tabyl(gpra_matched, ethnic_other_text_s3_recode)
+tabyl(gpra_matched, ethnic_central_american)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(ethnic_central_american = case_when(
+    ethnic_other_text_s3_recode == "Central American" ~ 1,
+    TRUE ~ ethnic_central_american),
+    
+    ethnic_other_s3 = case_when(
+      ethnic_other_text_s3_recode == "Central American" ~ 0,
+      ethnic_other_text_s3_recode == "NA" ~ NA,
+      TRUE ~ ethnic_other_s3),
+    
+    ethnic_other_text_s3 = case_when(
+      ethnic_other_text_s3_recode == "Central American" ~ NA,
+      ethnic_other_text_s3_recode == "NA" ~ NA,
+      TRUE ~ ethnic_other_s3))
+
+# race_spec_other_text_s3
+
+tabyl(gpra_matched, race_spec_other_text_s3_recode)
+
+
+gpra_matched <- gpra_matched %>% 
+  mutate(race_asian_combined = case_when(
+    race_spec_other_text_s3_recode == "Asian combined" ~ 1, 
+    TRUE ~ race_asian_combined),
+    
+    race_black = case_when(
+      grepl("Black", race_spec_other_text_s3_recode) ~ 1,
+      TRUE ~ race_black), 
+    
+    race_white = case_when(
+      grepl("White", race_spec_other_text_s3_recode) ~ 1,
+      TRUE ~ race_white),
+    
+    race_american_indian = case_when(
+      grepl("American Indian", race_spec_other_text_s3_recode) ~ 1, 
+      TRUE ~ race_american_indian),
+    
+    race_spec_other_text_s3 = case_when(
+      race_spec_other_text_s3_recode == "Other (please specify):" ~ race_spec_other_text_s3,
+      TRUE ~ NA),
+    
+    race_spec_other_s3 = case_when(
+      !is.na(race_spec_other_text_s3) ~ 1,
+      race_refused == 1 ~ NA, 
+      TRUE ~ 0))
+
+# sex_orient_other_text_s3
+
+tabyl(gpra_matched, sex_orient_other_text_s3_recode) 
+
+gpra_matched <- gpra_matched %>% 
+  mutate(sex_orient_other_text_s3 = case_when(
+    sex_orient_other_text_s3_recode == "Other (Specify):" ~ sex_orient_other_text_s3,
+    TRUE ~ NA),
+    
+    sexual_orientation_other_s3 = case_when(
+      !is.na(race_spec_other_text_s3) ~ 1,
+      #sexual_orientation_s2 == "Other" ~ 1,
+      #sexual_orientation_s2 == "REFUSED" ~ NA,
+      sexual_orientation_refused_s3 == 1 ~ NA, 
+      TRUE ~ 0))
+
+# od_other_p30_text_s3
+
+tabyl(gpra_matched, od_other_p30_text_s3_recode) 
+
+gpra_matched <- gpra_matched %>% 
+  mutate(od_supervision_p30_s3 = case_when(
+    od_other_p30_text_s3_recode == "Supervision by someone else" ~ "Supervision by someone else", 
+    TRUE ~ od_supervision_p30_s3),
+    
+    od_other_p30_text_s3 = case_when(
+      od_other_p30_text_s3_recode == "Other (Specify):" ~ od_other_p30_text_s3,
+      TRUE ~ NA),
+    
+    od_other_p30_s3 = case_when(
+      !is.na(race_spec_other_text_s3) ~ "Other",
+      od_refused_p30_s3 == 1 ~ NA, 
+      TRUE ~ NA))
+
+# o_coach_reason_other_text
+
+tabyl(gpra_matched, o_coach_reason_other_text_recode)
+tabyl(gpra_matched, o_coach_reason_refused)
+
+gpra_matched <- gpra_matched %>% 
+  mutate(o_coach_reason_interested_planning = case_when(
+    grepl("am interested and am planning", o_coach_reason_other_text_recode) ~ 1, 
+    TRUE ~ o_coach_reason_interested_planning),
+    
+    o_coach_reason_not_interested = case_when(
+    grepl("not interested in working with", o_coach_reason_other_text_recode) ~ 1,
+    TRUE ~ o_coach_reason_not_interested),
+
+    o_coach_reason_unaware_option = case_when(
+      grepl("was an option",o_coach_reason_other_text_recode) ~ 1,
+      TRUE ~ o_coach_reason_unaware_option),
+    
+    o_coach_reason_not_comfortable = case_when(
+      grepl("don't feel comfortable",o_coach_reason_other_text_recode) ~ 1,
+      TRUE ~ o_coach_reason_not_comfortable),
+    
+    o_coach_reason_no_time = case_when(
+      grepl("hard for me to find time",o_coach_reason_other_text_recode) ~ 1,
+      TRUE ~ o_coach_reason_no_time),
+    
+    o_coach_reason_no_one_available = case_when(
+      grepl("not a peer supporter available",o_coach_reason_other_text_recode) ~ 1,
+      TRUE ~ o_coach_reason_no_one_available),
+    
+    o_coach_reason_other_text = case_when(
+      o_coach_reason_other_text_recode == "Other (specify)" ~ o_coach_reason_other_text,
+      TRUE ~ NA),
+    
+    o_coach_reason_other = case_when(
+      !is.na(o_coach_reason_other_text) ~ 1,
+      o_coach_reason_refused == "REFUSED" ~ NA,
+      TRUE ~ 0))
+
+```
+
+### Fix variables
+Note from Leon: Some variables got messed up when combining the "others", so I'm just fixing them here
+```{r reorder variables, include=FALSE}
+
+### put edu_education_level in order
+gpra_matched <- gpra_matched %>% 
+  mutate(edu_education_level = factor(edu_education_level, levels = c("LESS THAN 12TH GRADE",
+                                                                      "12TH GRADE/HIGH SCHOOL DIPLOMA/EQUIVALENT",
+                                                                      "VOCATIONAL/TECHNICAL PROGRAM AFTER HIGH SCHOOL BUT NO VOC/TECH DIPLOMA",
+                                                                      "VOCATIONAL/TECHNICAL (VOC/TECH) DIPLOMA",
+                                                                      "SOME COLLEGE OR UNIVERSITY",
+                                                                      "BACHELOR'S DEGREE (FOR EXAMPLE: BA, BS)",
+                                                                      "GRADUATE WORK/GRADUATE DEGREE",
+                                                                      "OTHER (SPECIFY):"
+                                                                      )))
+
+# tabyl(gpra_matched, edu_education_level)
+
+### fix employ_status
+gpra_matched <- gpra_matched %>% 
+  mutate(employ_status = case_when(
+    str_detect(employ_status, "EMPLOYED, FULL TIME") ~ "EMPLOYED, FULL TIME (35+ HOURS/WEEK, OR WOULD BE, IF NOT FOR LEAVE OR AN EXCUSED ABSENCE)",
+    employ_status == "UNEMPLOYED, DISABLED" ~ "NOT WORKING DUE TO A DISABILITY",
+    str_detect(employ_status, "BUT LOOKING FOR WORK") ~ "UNEMPLOYED, BUT LOOKING FOR WORK",
+    str_detect(employ_status, ", LOOKING FOR WORK") ~ "UNEMPLOYED, BUT LOOKING FOR WORK",
+    employ_status == "UNEMPLOYED, NOT LOOKING FOR WORK" ~ "NOT EMPLOYED, NOT LOOKING FOR WORK",
+    employ_status == "UNEMPLOYED, RETIRED" ~ "RETIRED, NOT WORKING",
+    employ_status == "UNEMPLOYED, VOLUNTEER WORK" ~ "OTHER (specify)",
+    employ_status == "OTHER (SPECIFY)" ~ "OTHER (specify)",
+    employ_status == "REFUSED" ~ NA_character_,
+    TRUE ~ employ_status) %>% 
+      factor(., levels = c("EMPLOYED, FULL TIME (35+ HOURS/WEEK, OR WOULD BE, IF NOT FOR LEAVE OR AN EXCUSED ABSENCE)",
+                           "EMPLOYED, PART TIME",
+                           "UNEMPLOYED, BUT LOOKING FOR WORK",
+                           "NOT EMPLOYED, NOT LOOKING FOR WORK",
+                           "NOT WORKING DUE TO A DISABILITY",
+                           "RETIRED, NOT WORKING",
+                           "OTHER (specify)")))
+
+# tabyl(gpra_matched, employ_status)
+
+### fix living_housed
+gpra_matched <- gpra_matched %>% 
+  mutate(living_housed = case_when(
+    str_detect(living_housed, "SOMEONE ELSE") ~ "SOMEONE ELSE'S APARTMENT, ROOM, TRAILER, OR HOUSE (INCLUDING COUCH SURFING)",
+    str_detect(living_housed, "OTHER HOUSED ") ~ "OTHER HOUSED (SPECIFY)",
+    TRUE ~ living_housed))
+
+```
+
+### Create new justice-related variable
+
+```{r justice, include=FALSE}
+
+gpra_matched <- gpra_matched %>% 
+  mutate(justice_any = case_when(
+    legal_await_trial == "Yes" ~ "Yes",
+    legal_parole_probation == "YES" ~ "Yes",
+    legal_court_program_s3 == "Deferred prosecution agreement" ~ "Yes",
+    legal_court_program_s3 == "Drug court program" ~ "Yes",
+    srvc_location == "Jail/Criminal Justice Setting (in person or virtual)" ~ "Yes",
+    TRUE ~ "No"
+  ))
+
+```
+
+### Create lang spoken at home var 
+
+```{r justice, include=FALSE}
+gpra_matched <- gpra_matched %>% 
+  mutate(lang_home = case_when(is.na(span_eng_s3) & lang_not_english_at_home_s3 == "No" ~ "English",
+                               is.na(span_eng_s3) & lang_not_english_at_home_s3 == "Yes" ~ lang_not_english_spoken_2_text_s3,
+                              span_eng_s3 == "English" & lang_not_english_at_home_s3 == "No" ~ "English",
+                               span_eng_s3 == "English" & lang_not_english_at_home_s3 == "Yes" & str_detect(tolower(lang_not_english_spoken_2_text_s3), "english") ~ "English", ## some people marked "yes, speak a language other than English, but then still wrote in English"
+                               span_eng_s3 == "English" & lang_not_english_at_home_s3 == "Yes" ~ lang_not_english_spoken_2_text_s3,
+                               span_eng_s3 == "Spanish" & lang_not_spanish_at_home_s3 == "No" ~ "Spanish",
+                               span_eng_s3 == "Spanish" & lang_not_spanish_at_home_s3 == "Yes" ~ lang_not_spanish_spoken_2_text_s3,
+                               span_eng_s3 == "Spanish" & lang_not_spanish_at_home_s3 == "Yes" & str_detect(tolower(lang_not_spanish_spoken_2_text_s3), "spanish") ~ "Spanish", ## some people marked "yes, speak a language other than Spanish, but then still wrote in Spanish"
+                              lang_not_english_at_home_s3 == "REFUSED" ~ NA,
+                              lang_not_spanish_at_home_s3 == "REFUSED" ~ NA,
+                              is.na(lang_not_spanish_at_home_s3) & is.na(lang_not_english_at_home_s3) ~ NA
+                               ))
+
+```
+
+```{r save data, include = FALSE}
+duplicate_counts <- gpra_matched %>%
+  group_by(client_id) %>%              # Group by the ID column
+  filter(n() > 1) %>%           # Keep only duplicate IDs
+  summarise(count = n()) %>%     # Count occurrences of each duplicate ID
+  summarise(total_duplicates = sum(count))
+
+saveRDS(gpra_matched, "data/intakes_cleaned_thru_10.15_other_corrected.rds")
+
+saveRDS(gpra_matched, "../../../General/SOR Reports/Year 6 Annual Report/Recovery Drafts/Data and Analysis/data/intakes_cleaned_thru_10.14_other_corrected.rds")
+
+```
+
+```{r rec team output, include = FALSE}
+
+# Recovery team requested BARC-10 output 
+
+rec_team <- gpra_matched %>% 
+  select(client_id, 
+         tool, 
+         srvc_location,
+         o_barc10_total_score, 
+         (starts_with("o_barc10") & ends_with("_n") & !contains("_f_") & !contains("total")),
+         o_coach_spec_mentor,
+         o_coach_helpful_rec,
+         o_if_no_peer_supp_s3) %>% 
+  mutate(timepoint = case_match(tool,
+                                "intake old" ~ "Intake",
+                                "intake new" ~ "Intake",
+                                "fu/dis new" ~ "FU/Discharge")) %>% 
+  rename(o_currently_work_w_peer = o_coach_spec_mentor) %>% 
+  select(-c(tool)) %>% 
+  group_by(client_id) %>% 
+  filter(n() > 1) %>% 
+  ungroup() %>% 
+  select(client_id, timepoint, srvc_location, everything())
+  
+saveRDS(rec_team, "data/rec_analysis_barc10_sor3_y2.rds")
+
+# need to update once Year 6 annual report folder is created
+saveRDS(rec_team, "../../../General/SOR Reports/Year 6 Annual Report/Recovery Drafts/Data and Analysis/data/rec_analysis_barc10_sor3_y2.rds")
+
+```
+
+```{r rec team output2, include = FALSE}
+
+rec_team2 <- gpra_matched %>% 
+  select(client_id,
+         tool,
+         o_coach_spec_mentor,
+         o_connected_coach,
+         o_connected_coach_6_text,
+         o_coach_mandatory,
+         o_coach_mandatory_4_text,
+         starts_with("o_coach_reason_"),
+         starts_with("p30_any_sub"),
+         qol_health_satisfaction,
+         qol_health_satisfaction_n,
+         qol_rel_satisfaction,
+         qol_rel_satisfaction_n,
+         qol_perform_daily_act_satis,
+         qol_perform_daily_act_satis_n,
+         qol_life_quality_combined,
+         qol_life_quality_combined_n,
+         (starts_with("o_impact") & !contains("_f"))) %>% 
+  mutate(timepoint = case_match(tool,
+                                "intake old" ~ "Intake",
+                                "intake new" ~ "Intake",
+                                "fu/dis new" ~ "FU/Discharge")) %>%
+  select(-c(tool, o_coach_reason_other_text_recode)) %>% 
+  rename(o_currently_work_w_peer = o_coach_spec_mentor,
+         o_connected_coach_how = o_connected_coach,
+         o_connected_coach_how_other_text = o_connected_coach_6_text,
+         o_coach_mandatory_other_text = o_coach_mandatory_4_text)
+
+saveRDS(rec_team2, "../../../General/SOR Reports/Year 6 Annual Report/Recovery Drafts/Data and Analysis/data/rec_analysis_intake_peer_sor3_y2.rds")
+
+```

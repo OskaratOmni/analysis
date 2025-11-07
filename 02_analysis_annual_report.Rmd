@@ -1,0 +1,41 @@
+---
+title: "JEFFCOPSC24-25"
+subtitle: "Analysis for annual report"
+author: "Meredith"
+date: "`r Sys.Date() |> format('%B %d, %Y')`"
+output:
+  omni::html_report:
+    toc: true
+    toc_float: true
+    main_font: "Inter Tight"
+    background_color: "#ffffff"
+    remove_logo: FALSE
+    use_csi_style: FALSE
+---
+
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+```
+
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(janitor)
+library(omni)
+library(scales)
+
+# Meredith, the function 'emit_table' can be really useful. 
+# lets say you subset your data for a certain figure or stat test. 
+# you have a dataframe that is something like gender_donut or prepost_test- but you want the data for that specific figure or test to be saved as an excel file. 
+# you can run emit_table(gender_donut) and it saves that to excel using the same name as the code chunk 
+source("functions/jeffcopsc_functions.R")
+
+
+```
+
+
+## File Description 
+
+
+## 

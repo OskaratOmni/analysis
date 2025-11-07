@@ -1,0 +1,698 @@
+---
+title: "JEFFCOPSC24-25"
+subtitle: "GPRA Data Cleaning"
+author: "Author"
+date: "`r Sys.Date() |> format('%B %d, %Y')`"
+output:
+  omni::html_report:
+    toc: true
+    toc_float: true
+    main_font: "Inter Tight"
+    background_color: "#f9f7f4"
+    remove_logo: FALSE
+editor_options: 
+  chunk_output_type: console
+---
+
+## File Description
+
+Purpose:
+- Clean and recode GPRA intake data for analysis and reporting.
+
+Inputs:
+- CSV export placed in a secure folder (see `secure_data_path` and
+  `input_file`). The file name is set in the Config section.
+
+Outputs:
+- .rds file with a single object `data_recoded` saved to
+  'analysis' -> 'data_clean'.
+- The content of this data cleaning report, which should document all key data cleaning steps and their implications for team review.   
+
+Assumptions & Notes:
+
+- Intake dates are filtered to a configurable window (inclusive). [I'm not sure what this means yet]
+
+- Recodes follow GPRA codebook; negative codes are handled as specified
+  in each step. [I'm not sure what this means yet]
+
+- Column names in the CSV match those referenced below; an early QA check
+  will stop with a clear error if required variables are missing.
+  
+- This script is intended to **show code** in the knitted HTML for review.
+
+Open Questions: 
+
+ - What role does the Survey Monkey play? 
+ - It looks like it only has about 12 responses
+ - Should it be cleaned in this scrip too? 
+ - The analysis plan says: "individuals will be matched based on intake and their most recent follow up whether that is 6 months or discharge using ClientIntakeID."  - what needs to be matched to what? So far I am aware of only one file (the one cleaned below), so I'm not sure what the matching refers to. 
+
+
+
+## Preliminaries 
+
+Set document properties, load packages, load data, etc 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.path='figs_cleaning/',
+                      echo=TRUE,
+                      warning=FALSE, 
+                      message=FALSE)
+```
+
+
+
+```{r packages, echo=FALSE}
+library(tidyverse)
+library(omni)
+library(flextable)
+library(openxlsx)
+```
+
+Set paramaters needed to call, filter, or sort data, below: 
+
+```{r}
+# Set path to secure folder with GPRA data
+secure_data_path <- ("../data_secure/gpra_downloads")
+
+# date window start and end 
+# !!! have project team verify that this is the correct window !!! 
+intake_start = as.Date("2024-09-30")
+intake_end = as.Date("2025-9-30")
+```
+
+We are filtering the data to intake dates that start at `r intake_start` and end at `r intake_end`. 
+
+# Load raw data
+
+```{r}
+# ATTENTION: this data cleaning script had previously called a csv file that
+# doesn't exist in this folder. Here's the previous call:
+# raw_data <- read_csv(file.path(secure_data_path, "GPRA CSAT EXPORT 8.12.csv"))
+# the file 'GPRA CSAT EXPORT 8.12.csv' is now in the archive so this script wouldn't run as is 
+
+raw_data = read.xlsx(paste0(secure_data_path,"/", "Final Data Set_10.24.25.xlsx"))
+```
+
+
+```{r include=FALSE, echo=FALSE}
+glimpse(raw_data)
+```
+
+# Filter data by intake dates (FY24-25, adjust date format accordingly)
+
+```{r}
+data_filtered <- raw_data %>%
+  mutate(IntakeDate_fixed = janitor::excel_numeric_to_date(IntakeDate)) %>%
+  filter(IntakeDate_fixed >= intake_start & IntakeDate_fixed <= intake_end)
+
+# check this excluding the filter
+# data_filtered |> select(matches("^IntakeD")) |> View()
+# Obs: didn't see any missing intake dates
+```
+
+```{r}
+nrow_raw = nrow(raw_data)
+nrow_filtered = nrow(data_filtered)
+nrow_NAintakedate = nrow(raw_data |> filter(is.na(IntakeDate)))
+```
+
+Applying the date filtering decreased the total number of cases in the data from 
+`r nrow_raw` to `r nrow_filtered`. 
+
+In the raw data there were `r nrow_NAintakedate` cases of missing intake date. 
+  
+### Select variables used downstream
+
+```{r}
+# NOTE: I'd be tempted to define each of these variable groups as a separate vector. e.g., 
+# TUD_vars = c("kTUDMedNicotineRepl", "kTUDMedBupropion", "kTUDMedVarenicline", "kTUDMedNotReceived") 
+# client_coccurr_vars = c("CooccurringScreen", "CooccurringScreenStatus") 
+# so that you could call subsets as needed downstream for filtering, pivoting, etc 
+# Parking this thought as a comment for now - might come back and make this change 
+# once we have a better sense for what's going on 
+
+required_vars <- c(
+  "IntakeDate",
+  # Participant Characteristics
+  "ClientID", "Gender", "Age", "HispanicLatino", "EthnicCentralAmerican", "EthnicCuban", "EthnicDominican",
+  "EthnicMexican", "EthnicPuertoRican", "EthnicSouthAmerican", "EthnicOther", "EthnicOtherSpec",
+  "RaceBlack", "RaceWhite", "RaceAmericanIndian", "RaceAlaskaNative", "RaceAsianIndian",
+  "RaceChinese", "RaceFilipino", "RaceJapanese", "RaceKorean", "RaceVietnamese", "RaceOtherAsian",
+  "RaceNativeHawaiian", "RaceGuamanianChamorro", "RaceSamoan", "RaceOtherPacificIslander",
+  "RaceOther", "RaceSpec", "LangNotEnglishAtHome", "ChildrenUnder18Nr", "ServicesTravelTime",
+  "LangNotEnglishSpoken", "LangNotEnglishSpokenSpec",
+
+  # Substance Use
+  "AlcoholDays", "OpioidsHeroinDays", "OpioidsMorphineDays", "OpioidsFentanylDays",
+  "OpioidsDilaudidDays", "OpioidsDemerolDays", "OpioidsPercocetDays", "OpioidsCodeineDays",
+  "OpioidsTylenolDays", "OpioidsOxycoDays", "OpioidsNonPresMethadoneDays",
+  "OpioidsNonPresBupDays", "OpioidsOther1Days", "MarijuanaDays", "SynthCannDays",
+  "CannOther1Days", "SedativeDays", "HypnoDays", "BarbituratesDays", "AnxioBenzoDays",
+  "CocaineDays", "CrackDays", "MethamDays", "StimMedsDays", "PCPDays", "MDMADays", "LSDDays",
+  "MushroomDays", "MescalineDays", "SalviaDays", "DMTDays", "HalluPsychOther1Days",
+  "InhalantsDays", "NonPrescGhbDays", "KetamineDays", "BathSaltsDays", "KratomDays",
+  "KhatDays", "TobaccoDays", "NicotineDays",
+
+  # Services Received
+  "PreviouslyDiagnosedTUD", "PreviouslyDiagnosedStUD", "PreviouslyDiagnosedAUD", "PreviouslyDiagnosedOUD",
+
+  # SUD treatment
+  # OUD
+  "kOUDMedMethadone", "kOUDMedBuprenorphine", "kOUDMedNaltrexone", "kOUDMedXRNaltrexone", "kOUDMedNotReceived",
+  # AUD
+  "kAUDMedNaltrexone", "kAUDMedXRNaltrexone", "kAUDMedDisulfiram", "kAUDMedAcamprosate", "kAUDMedNotReceived",
+  # StUD
+  "kStUDIntContMgmt", "kStUDIntCommReinf", "kStUDIntCBT", "kStUDIntOther", "kStUDIntNotReceived", "StUDIntAttended",
+  # TUD
+  "kTUDMedNicotineRepl", "kTUDMedBupropion", "kTUDMedVarenicline", "kTUDMedNotReceived",
+
+  # Clients screened for co-occurring mental health and/or substance use disorders
+  "CooccurringScreen", "CooccurringScreenStatus",
+
+  # Treatment
+  "TxSUD", "AlcMedNaltrexone", "AlcMedExtRelNaltrexone", "AlcMedDisulfiram",
+  "AlcMedAcamprosate", "OpMedMethadone", "OpMedBuprenorphine", "OpMedNaltrexone",
+  "OpMedExtRelNaltrexone",
+
+  # Mental Health Diagnoses
+  "MHDiagnosis", "DxBriefPsych", "DxDelusional", "DxSchizoaffective", "DxSchizophrenia",
+  "DxSchizotypal", "DxSharedPsychotic", "DxUnspecPsych", "DxBipolar", "DxMajorDepRecurr",
+  "DxMajorDepSingle", "DxManicEp", "DxPersistMood", "DxUnspecMood", "DxAgora", "DxAgoraWithPD",
+  "DxAgoraUnspec", "DxGAD", "DxPanic", "DxPhobic", "DxSocialPhobia", "DxSpecPhobia",
+  "DxExcoriation", "DxHoarding", "DxOCD", "DxOCDMixed", "DxAcuteStress", "DxAdjustment",
+  "DxBodyDysmorph", "DxDissocConvers", "DxDissocID", "DxPTSD", "DxSomat", "DxEating", "DxSleep",
+  "DxAntisocial", "DxAvoidant", "DxBorderline", "DxDependent", "DxHistrionic", "DxIntellect",
+  "DxObsessCompulsPers", "DxOtherSpecPD", "DxParanoid", "DxPersonalityUnspec",
+  "DxDevelopmentalDis", "DxSchizoidPD", "DxNoneOfTheAbove",
+
+  # Living Situation
+  "LivingWhere", "LivingHoused",
+
+  # Education
+  "Education",
+
+  # Employment and Income
+  "EmployStatus", "Income", "EnoughMoneyFood", "EnoughMoneyClothing",
+  "EnoughMoneyTransport", "EnoughMoneyRentHousing", "EnoughMoneyUtilities",
+  "EnoughMoneyPhone", "EnoughMoneyChildcare", "EnoughMoneyHealthIns",
+
+  # Quality of Life
+  "LifeQuality",
+
+  # Current Mental Health
+  "Depression", "Anxiety", "Hallucinations", "BrainFunction", "ViolentBehavior", "Suicide",
+  "PsycholEmotMedication",
+
+  # Social Connections
+  "AttendVoluntary", "InteractFamilyFriends", "ChangeConnectionsPlaces", "RelationshipSatisfaction"
+)
+
+# Check that all required variables exist
+missing_vars <- setdiff(required_vars, names(data_filtered))
+if (length(missing_vars)) {
+  stop("Missing required columns in input: ", paste(missing_vars, collapse = ", "))
+}
+```
+
+
+Subset data to required columns:
+
+```{r}
+data_selected <- data_filtered %>% 
+  mutate(IntakeDate = IntakeDate_fixed) |> 
+  select(all_of(required_vars)) 
+
+```
+
+
+Preview the selected data
+
+
+```{r}
+glimpse(data_selected) |> omni_table()
+```
+
+### Check for duplicates 
+
+rows: 
+
+```{r}
+dupes = janitor::get_dupes(data_selected)
+stopifnot(nrow(dupes) == 0)
+```
+
+ids: 
+
+```{r}
+dupe_ids = janitor::get_dupes(data_selected, ClientID)
+
+# everyone is in there two or three times
+# dupe_ids |> count(ClientID) |> arrange(desc(n))
+dupe_ids |> pull(dupe_count) |> table() |> as.data.frame() |> omni_table(caption = "Occurrences of each client id")
+```
+
+
+
+### Recode & clean
+
+This section applies GPRA code frames consistently.
+
+## Gender
+
+```{r}
+data_recoded <- data_selected %>%
+mutate(
+  # We would prefer to use case_match() here. recode has been superseded 
+Gender = recode(Gender, "1" = "Male", 
+                "2" = "Female",
+                "4" = "Other",
+                "5" = "Transgender (Male to Female)",
+                "6" = "Transgender (Female to Male)",
+                "7" = "Gender non-conforming",
+                "-7" = "Refused",
+                "-9" = "Missing Data",
+                .default = NA_character_))
+
+# data_recoded |> count(Gender)
+```
+
+
+## Race/Ethnicity
+
+
+```{r}
+ethnicity_race_vars <- c("HispanicLatino", "EthnicCentralAmerican", "EthnicCuban", "EthnicDominican",
+                         "EthnicMexican", "EthnicPuertoRican", "EthnicSouthAmerican", "EthnicOther",
+                         "RaceBlack", "RaceWhite", "RaceAmericanIndian", "RaceAlaskaNative",
+                         "RaceAsianIndian", "RaceChinese", "RaceFilipino", "RaceJapanese",
+                         "RaceKorean", "RaceVietnamese", "RaceOtherAsian", "RaceNativeHawaiian",
+                         "RaceGuamanianChamorro", "RaceSamoan", "RaceOtherPacificIslander", "RaceOther")
+
+data_recoded <- data_recoded %>%
+  mutate(across(all_of(ethnicity_race_vars), ~ case_when(
+    . == 1 ~ "Yes",
+    . == 0 ~ "No",
+    . == -7 ~ "Refused",
+    . == -9 ~ "Missing",
+    TRUE ~ NA_character_
+  )))
+```
+
+## Children under 18
+
+```{r}
+data_recoded <- data_recoded %>%
+  mutate(
+    ChildrenUnder18Nr = case_when(
+      ChildrenUnder18Nr >= 0 & ChildrenUnder18Nr <= 99 ~ as.character(ChildrenUnder18Nr),
+      ChildrenUnder18Nr == -7 ~ "Refused",
+      ChildrenUnder18Nr == -9 ~ "Missing",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+## Services travel time
+
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(
+    ServicesTravelTime = recode(ServicesTravelTime,
+                                "1" = "Half an hour or less",
+                                "2" = "Between half an hour and one hour",
+                                "3" = "Between one hour and one and a half hours",
+                                "4" = "Between one and a half hours and two hours",
+                                "5" = "Two hours or more",
+                                "-7" = "Refused",
+                                "-9" = "Missing"))
+```
+
+## Substance use last 30 days
+
+```{r}
+substance_use_vars <- c("AlcoholDays", "OpioidsHeroinDays", "OpioidsMorphineDays", "OpioidsFentanylDays",
+                        "OpioidsDilaudidDays", "OpioidsDemerolDays", "OpioidsPercocetDays", "OpioidsCodeineDays",
+                        "OpioidsTylenolDays", "OpioidsOxycoDays", "OpioidsNonPresMethadoneDays",
+                        "OpioidsNonPresBupDays", "OpioidsOther1Days", "MarijuanaDays", "SynthCannDays",
+                        "CannOther1Days", "SedativeDays", "HypnoDays", "BarbituratesDays", "AnxioBenzoDays",
+                        "CocaineDays", "CrackDays", "MethamDays", "StimMedsDays", "PCPDays", "MDMADays", "LSDDays",
+                        "MushroomDays", "MescalineDays", "SalviaDays", "DMTDays", "HalluPsychOther1Days",
+                        "InhalantsDays", "NonPrescGhbDays", "KetamineDays", "BathSaltsDays", "KratomDays",
+                        "KhatDays", "TobaccoDays", "NicotineDays")
+
+data_recoded <- data_recoded %>% 
+  mutate(across(all_of(substance_use_vars), ~ case_when(
+    . >= 0 & . <= 30 ~ as.character(.),
+    . == -7 ~ "Refused",
+    . == -9 ~ "Missing",
+     TRUE ~ NA_character_
+  )))
+```
+
+## Language spoken at home
+
+### Language other than English (yes/no)
+
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(
+    LangNotEnglishAtHome = recode(LangNotEnglishAtHome,
+    "1" = "Yes",
+    "0" = "No",
+    "-1" = "Not Applicable",
+    "-7" = "Refused",
+    "-9" = "Missing Data",
+    .default = NA_character_))
+```
+
+### Language other than English (specify)
+
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(
+    LangNotEnglishSpoken = recode(LangNotEnglishSpoken,
+    "1" = "Spanish",
+    "2" = "Other (Specify)",
+    "-1" = "Not Applicable",
+    "-7" = "Refused",
+    "-9" = "Missing Data",
+    .default = NA_character_))
+```
+
+## Clients screened for co-occurring mental health and/or substance use disorders
+
+```{r}
+screened_vars <- c("CooccurringScreen", "CooccurringScreenStatus")
+
+data_recoded <- data_recoded %>%
+  mutate(across(all_of(screened_vars), ~ case_when(
+    . == 1 ~ "Yes",
+    . == 0 ~ "No",
+    . == -1 ~ "Not Applicable",
+    . == -9 ~ "Missing",
+    TRUE ~ NA_character_
+  )))
+```
+
+## Services Recieved
+
+### SUD diagnosis
+
+```{r}
+services_recieved_vars <- c("PreviouslyDiagnosedTUD", "PreviouslyDiagnosedStUD", "PreviouslyDiagnosedAUD", "PreviouslyDiagnosedOUD")
+
+data_recoded <- data_recoded %>%
+  mutate(across(all_of(services_recieved_vars), ~ case_when(
+    . == 1 ~ "Yes",
+    . == 0 ~ "No",
+    . == -1 ~ "Not Applicable",
+    . == -9 ~ "Missing",
+    TRUE ~ NA_character_
+  )))
+```
+### SUD treatment
+```{r}
+treatment_recieved_vars <- c(
+  "kOUDMedMethadone", "kOUDMedBuprenorphine", "kOUDMedNaltrexone", "kOUDMedXRNaltrexone", "kOUDMedNotReceived",
+  "kAUDMedNaltrexone", "kAUDMedXRNaltrexone", "kAUDMedDisulfiram", "kAUDMedAcamprosate", "kAUDMedNotReceived",
+  "kStUDIntContMgmt", "kStUDIntCommReinf", "kStUDIntCBT", "kStUDIntOther", "kStUDIntNotReceived", "StUDIntAttended",
+  "kTUDMedNicotineRepl", "kTUDMedBupropion", "kTUDMedVarenicline", "kTUDMedNotReceived"
+)
+
+data_recoded <- data_recoded %>% 
+  mutate(across(all_of(treatment_recieved_vars), ~ case_when(
+    . == 1 ~ "Yes",
+    . == 0 ~ "No",
+    . == -1 ~ "Not Applicable",
+    . == -9 ~ "Missing",
+    TRUE ~ NA_character_  
+  )))
+```
+
+## Treatment
+### TxSUD
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(
+    TxSUD = recode(TxSUD,
+                   "1" = "One time",
+                   "2" = "Two times",
+                   "3" = "Three times",
+                   "4" = "Four times",
+                   "5" = "Five times",
+                   "6" = "Six or more times",
+                   "0" = "Never",
+                   "-7" = "Refused",
+                   "-9" = "Missing data")
+  )
+```
+
+### MAT
+```{r}
+mat_vars <- c("AlcMedNaltrexone", "AlcMedExtRelNaltrexone", "AlcMedDisulfiram",
+"AlcMedAcamprosate", "OpMedMethadone", "OpMedBuprenorphine", "OpMedNaltrexone",
+"OpMedExtRelNaltrexone"
+)
+
+data_recoded <- data_recoded %>% 
+  mutate(across(all_of(mat_vars), ~ case_when(
+    . == 1 ~ "Yes",
+    . == 0 ~ "No",
+    . == -7 ~ "Refused",
+    . == -9 ~ "Missing",
+    TRUE ~ NA_character_
+  )))
+```
+
+
+## Mental Health Diagnoses
+```{r}
+mental_health_vars <- c("MHDiagnosis", "DxBriefPsych", "DxDelusional", "DxSchizoaffective", "DxSchizophrenia",
+                        "DxSchizotypal", "DxSharedPsychotic", "DxUnspecPsych", "DxBipolar", "DxMajorDepRecurr",
+                        "DxMajorDepSingle", "DxManicEp", "DxPersistMood", "DxUnspecMood", "DxAgora", "DxAgoraWithPD",
+                        "DxAgoraUnspec", "DxGAD", "DxPanic", "DxPhobic", "DxSocialPhobia", "DxSpecPhobia",
+                        "DxExcoriation", "DxHoarding", "DxOCD", "DxOCDMixed", "DxAcuteStress", "DxAdjustment",
+                        "DxBodyDysmorph", "DxDissocConvers", "DxDissocID", "DxPTSD", "DxSomat", "DxEating", "DxSleep",
+                        "DxAntisocial", "DxAvoidant", "DxBorderline", "DxDependent", "DxHistrionic", "DxIntellect",
+                        "DxObsessCompulsPers", "DxOtherSpecPD", "DxParanoid", "DxPersonalityUnspec",
+                        "DxDevelopmentalDis", "DxSchizoidPD", "DxNoneOfTheAbove")
+
+data_recoded <- data_recoded %>% 
+  mutate(across(all_of(mental_health_vars), ~ case_when(
+    . == 1 ~ "Yes",
+    . == 0 ~ "No",
+    . == -1 ~ "Not Applicable",
+    . == -7 ~ "Refused",
+    . == -9 ~ "Missing",
+    TRUE ~ NA_character_
+  )))
+```
+
+
+## Living Situation
+### Living where
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(
+    LivingWhere = recode(LivingWhere,
+                         "1" = "Shelter", 
+                         "2" = "Street/ Outdoors",
+                         "3" = "Institution",
+                         "4" = "Housed",
+                         "-7" = "Refused",
+                         "-9" = "Missing Data")
+  )
+```
+
+
+### Living housed
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(
+    LivingHoused = recode(LivingHoused,
+                          "1" = "Own/Rental apartment, room, trailer, or house",
+                          "2" = "Someone else's apartment, room, trailer, or house",
+                          "6" = "Dormitory/College Residence",
+                          "3" = "Halfway house or Transitional Housing",
+                          "4" = "Residential Treatment",
+                          "7" = "Recovery Residence/Sober Living",
+                          "5" = "Other Housed (Specify)",
+                          "-1" = "Not applicable",
+                          "-7" = "Refused",
+                          "-9" = "Missing Data")
+  )
+
+
+```
+
+
+## Education
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(Education = recode(Education,
+                            "1" = "Less than 12th grade",
+                            "2" = "12th grade/high school diploma/equivalent",
+                            "3" = "Vocationa/technical diploma",
+                            "4" = "Some college or university",
+                            "5" = "Bachelor's degree (for example BA, BS)",
+                            "6" = "Graduate work/graduate degree",
+                            "7" = "Other (specify)",
+                            "-1" = "Not Applicable",
+                            "-7" = "Refused",
+                            "-9" = "Missing Data"))
+```
+
+
+## Employment and Income
+### Employment status
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(EmployStatus = recode(EmployStatus,
+                               "1" = "Employed, full time (35+ hours per week, or would be, if not for leave or an excused absence)",
+                               "2" = "Employed, part time",
+                               "3" = "Unemployed - but looking for work",
+                               "7" = "Not employed, not looking for work",
+                               "4" = "Not working due to a disability",
+                               "6" = "Retired, not working",
+                               "0" = "Other (SPECIFY)",
+                               "-1" = "Not Applicable",
+                               "-7" = "Refused",
+                               "-9" = "Missing Data"))
+```
+
+
+### Income
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(Income = recode(Income,
+                         "1" = "0 to 9,999",
+                         "2" = "10,000 to 14,999",
+                         "3" = "15,000 to 19,999",
+                         "4" = "20,000 to 34,999",
+                         "5" = "35,000 to 49,999",
+                         "6" = "50,000 to 74,999",
+                         "7" = "75,000 to 99,999",
+                         "8" = "100,000 to 199,999",
+                         "9" = "200,000 or more",
+                         "-7" = "Refused",
+                         "-9" = "Missing Data"))
+```
+### Other income vars
+```{r}
+income_vars <- c("EnoughMoneyFood", "EnoughMoneyClothing",
+    "EnoughMoneyTransport", "EnoughMoneyRentHousing", "EnoughMoneyUtilities",
+    "EnoughMoneyPhone", "EnoughMoneyChildcare", "EnoughMoneyHealthIns")
+
+data_recoded <- data_recoded %>% 
+  mutate(across(all_of(income_vars), ~ case_when(
+  . == 1 ~ "Yes",
+  . == 0 ~ "No",
+  . == -1 ~ "Not Applicable",
+  . == -7 ~ "Refused",
+  . == -9 ~ "Missing Data",
+  TRUE ~ NA_character_
+  )))
+```
+
+
+## Quality of life
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(LifeQuality = recode(LifeQuality,
+                              "1" = "Very Poor",
+                              "2" = "Poor",
+                              "3" = "Neither poor nor good",
+                              "4" = "Good",
+                              "5" = "Very Good",
+                              "-7" = "Refused",
+                              "-9" = "Missing Data",
+                              "-1" = "Not Applicable"))
+```
+
+
+## Current mental health
+```{r}
+current_mental_health_Vars <- c("Depression", "Anxiety", "Hallucinations", "BrainFunction", "ViolentBehavior", "Suicide", "PsycholEmotMedication")
+
+data_recoded <- data_recoded %>% 
+  mutate(across(all_of(current_mental_health_Vars), ~ case_when(
+    . >= 0 & . <= 30 ~ as.character(.),
+    . == -7 ~ "Refused",
+    . == -9 ~ "Missing",
+     TRUE ~ NA_character_
+  )))
+```
+## Social connectedness
+```{r}
+connectedness_vars <- c("AttendVoluntary", "InteractFamilyFriends", "ChangeConnectionsPlaces")
+
+data_recoded <- data_recoded %>% 
+  mutate(across(all_of(connectedness_vars), ~ case_when(
+  . == 1 ~ "Yes",
+  . == 0 ~ "No",
+  . == -1 ~ "Not Applicable",
+  . == -7 ~ "Refused",
+  . == -9 ~ "Missing",
+     TRUE ~ NA_character_
+  )))
+```
+### Relationship Satisfaction
+```{r}
+data_recoded <- data_recoded %>% 
+  mutate(RelationshipSatisfaction = recode(RelationshipSatisfaction,
+                                           "5" = "Very Dissatisfied",
+                                           "4" = "Dissatisfied",
+                                           "3" = "Neither Satisfied nor Dissatisfied",
+                                           "2" = "Satisfied",
+                                           "1" = "Very Satisfied",
+                                           "-7" = "Refused",
+                                           "-9" = "Missing Data",
+                                           "-1" = "Not applicable"))
+```
+
+# QA snapshots
+Lightweight checks helpful for reviewers.
+```{r qa}
+# Row counts through the pipeline
+list(
+  raw_n      = nrow(raw_data),
+  filtered_n = nrow(data_filtered),
+  selected_n = nrow(data_selected),
+  recoded_n  = nrow(data_recoded)
+)
+
+# Duplicates on ClientID (if available)
+if ("ClientID" %in% names(data_recoded)) {
+  dup_ids <- data_recoded %>% count(ClientID) %>% filter(n > 1)
+  if (nrow(dup_ids)) {
+    message("NOTE: duplicate ClientID values detected (showing first 10):")
+    print(head(dup_ids, 10))
+  }
+}
+
+# Spot-check missingness in key fields
+key_fields <- c("ClientID", "IntakeDate", "Gender", "Age")
+colSums(is.na(select(data_recoded, any_of(key_fields))))
+```
+
+# Save cleaned data as RData file
+Use a stable, project-rooted path via `here()`.
+
+```{r save-data}
+saveRDS(data_recoded, file = "../analysis/data_clean/cleaned_data.rds")
+```
+
+# Final check of recoded data
+```{r final-preview, include=FALSE, echo=FALSE}
+head(data_recoded)
+```
+
+# Session info (reproducibility)
+```{r session}
+sessionInfo()
+```
+
+# Notes
+
+- The cleaned dataset is saved as `cleaned_data.rds` and can be imported directly into analysis scripts using `load()`.

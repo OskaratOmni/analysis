@@ -1,4 +1,6 @@
 # functions for jeffcopsc
+# Oskar needs to make more comments
+
 
 # helpers for below functions
 
